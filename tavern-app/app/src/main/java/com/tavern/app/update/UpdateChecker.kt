@@ -16,7 +16,7 @@ object UpdateChecker {
     // Check the user's own repo for pre-patched ST core releases.
     // Each release should have a source zip (e.g. "tavern-core.zip") and a tag like "st-1.12.0".
     private const val ATOM_URL =
-        "https://github.com/wancDDY/ST-Ctrl/releases.atom"
+        "https://github.com/1288962ssdasd/ST-Ctrl/releases.atom"
 
     suspend fun checkLatest(): Result<ReleaseInfo> = withContext(Dispatchers.IO) {
         runCatching {
@@ -52,7 +52,7 @@ object UpdateChecker {
             val changelog = content.replace(Regex("<[^>]+>"), "").take(500)
 
             // Download the pre-patched zip from the release
-            val downloadUrl = "https://codeload.github.com/wancDDY/ST-Ctrl/zip/refs/tags/$title"
+            val downloadUrl = "https://codeload.github.com/1288962ssdasd/ST-Ctrl/zip/refs/tags/$title"
 
             ReleaseInfo(version = version, downloadUrl = downloadUrl, changelog = changelog)
         }

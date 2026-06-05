@@ -14,7 +14,7 @@ object AppUpdateChecker {
     )
 
     private const val ATOM_URL =
-        "https://github.com/wancDDY/ST-Ctrl/releases.atom"
+        "https://github.com/1288962ssdasd/ST-Ctrl/releases.atom"
 
     suspend fun check(): Result<AppRelease> = withContext(Dispatchers.IO) {
         runCatching {
@@ -48,7 +48,7 @@ object AppUpdateChecker {
                 .find(entry)?.groupValues?.get(1)?.trim() ?: ""
             val changelog = content.replace(Regex("<[^>]+>"), "").take(500)
 
-            val downloadUrl = "https://github.com/wancDDY/ST-Ctrl/releases/tag/$title"
+            val downloadUrl = "https://github.com/1288962ssdasd/ST-Ctrl/releases/tag/$title"
 
             AppRelease(version = version, downloadUrl = downloadUrl, changelog = changelog)
         }
