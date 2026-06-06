@@ -579,6 +579,22 @@ const PluginBridgeServer = {
 
     _handleAPI: function (req, res, pathname, method) {
         const self = this;
+
+        // 根路由 - 浏览器友好
+        if (pathname === '/' && method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<html><head><meta charset="utf-8"><title>PluginBridge</title></head><body><h1>PluginBridge Server</h1><p>状态: ' + (this._isRunning ? '运行中' : '未运行') + '</p><p>端口: ' + (this._actualPort || this.config.port) + '</p><p><a href="/api/health">/api/health</a> | <a href="/api/status">/api/status</a></p></body></html>');
+            return;
+        }
+
+        // 兼容路由：/api/plugins/xb-bridge-test/* → 转发到 /api/*
+        // 这样无论前端走 ST 代理还是直连 3001 都能工作
+        const compatPrefix = '/api/plugins/xb-bridge-test';
+        if (pathname.startsWith(compatPrefix + '/') || pathname === compatPrefix) {
+            pathname = '/api' + pathname.substring(compatPrefix.length);
+            console.log('[PluginBridge] 兼容路由重写:', req.url, '→', pathname);
+        }
+
         if (pathname === '/api/health' && method === 'GET') { this._sendJSON(res, { status: 'ok', timestamp: Date.now() }); return; }
         if (pathname === '/api/status' && method === 'GET') { this._sendJSON(res, this.getStatus()); return; }
         if (pathname.startsWith('/api/var/')) {
