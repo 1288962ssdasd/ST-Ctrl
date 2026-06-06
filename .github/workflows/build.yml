@@ -1,9 +1,12 @@
-name: Build ST-Ctrl APK + Release
+name: Build ST-Ctrl APK + Auto Release
 
 on:
   push:
     branches: [ master ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -37,31 +40,40 @@ jobs:
           name: st-ctrl-debug
           path: tavern-app/app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Get version
-        id: get_version
+      - name: Get version and date
+        id: get_info
         run: |
           VERSION=$(cat tavern-app/app/src/main/assets/core/version.txt | tr -d '[:space:]')
+          DATE=$(date +'%Y%m%d')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+          echo "apk_path=tavern-app/app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
 
-      - name: Create Release
-        if: github.event_name == 'push'
+      - name: Create/Update Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.get_version.outputs.version }}
-          name: ST-Ctrl v${{ steps.get_version.outputs.version }}
+          tag_name: v${{ steps.get_info.outputs.version }}
+          name: ST-Ctrl v${{ steps.get_info.outputs.version }} (${{ steps.get_info.outputs.date }})
           body: |
-            ## ST-Ctrl v${{ steps.get_version.outputs.version }}
+            ## ST-Ctrl v${{ steps.get_info.outputs.version }}
 
-            ### 更新内容
-            - 酒馆核心更新源已切换至本仓库
-            - 内置 PluginBridge 服务器（端口 3001）
-            - 自动 CI/CD 编译
+            ### 内置功能
+            - ✅ 酒馆核心自动更新（从本仓库拉取）
+            - ✅ PluginBridge 服务器（端口 3001）
+              - 共享变量存储（命名空间、TTL、持久化）
+              - 事件总线（WebSocket + HTTP）
+              - AI API 代理（解决 CORS）
+            - ✅ 自动 CI/CD 编译
 
             ### 安装说明
-            1. 下载 APK
+            1. 下载下方 APK 文件
             2. 在 Android 手机上允许「未知来源」安装
             3. 安装并打开 APP
-          files: tavern-app/app/build/outputs/apk/debug/app-debug.apk
+            4. APP 会自动从本仓库检查并下载酒馆核心更新
+
+            ### 源码
+            ${{ github.server_url }}/${{ github.repository }}
+          files: ${{ steps.get_info.outputs.apk_path }}
           draft: false
           prerelease: false
         env:
