@@ -139,4 +139,20 @@ function uninstallPlugin(pluginDir) {
     return { success: false, message: 'Plugin directory not found' };
 }
 
+// ==================== PluginBridge 注入 ====================
+// 在 server.js 启动后自动启动 PluginBridge 服务器
+// 功能：共享变量存储 + 事件总线 + WebSocket + AI API 代理
+
+try {
+    const pluginBridgePath = path.join(__dirname, 'plugin-bridge-server.js');
+    if (fs.existsSync(pluginBridgePath)) {
+        require(pluginBridgePath);
+        console.log('[PluginAdapter] PluginBridge 已加载并启动');
+    } else {
+        console.warn('[PluginAdapter] plugin-bridge-server.js 不存在，PluginBridge 未启动');
+    }
+} catch (err) {
+    console.error('[PluginAdapter] PluginBridge 启动失败:', err.message);
+}
+
 module.exports = { installPlugin, listPlugins, uninstallPlugin, BUNDLED_MODULES };
