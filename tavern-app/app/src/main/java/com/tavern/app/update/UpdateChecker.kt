@@ -39,7 +39,12 @@ object UpdateChecker {
             val stEntry = entryRegex.findAll(body).firstOrNull { entry ->
                 val t = Regex("<title>(.*?)</title>").find(entry.value)?.groupValues?.get(1)?.trim() ?: ""
                 t.startsWith("st-", ignoreCase = true)
-            } ?: throw Exception("未找到 ST 核心发布版本")
+            }
+
+            // If no st- release found in our repo, no update available
+            if (stEntry == null) {
+                throw Exception("NO_UPDATE")  // Signal: no ST core update available
+            }
 
             val entry = stEntry.value
             val title = Regex("<title>(.*?)</title>").find(entry)?.groupValues?.get(1)?.trim()
