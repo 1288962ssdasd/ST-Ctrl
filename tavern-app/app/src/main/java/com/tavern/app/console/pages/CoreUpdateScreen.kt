@@ -150,7 +150,7 @@ fun CoreUpdateScreen(onBack: () -> Unit) {
             Text("ST 核心", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
                 color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp)
             Spacer(modifier = Modifier.height(4.dp))
-            Text("更新源：wancDDY/ST-Ctrl Releases。ST 核心为预先打好 Android 兼容补丁的版本，非官方原版。发布时 tag 格式如 st-1.12.0。",
+            Text("更新源：1288962ssdasd/ST-Ctrl Releases。ST 核心为预先打好 Android 兼容补丁的版本，非官方原版。发布时 tag 格式如 st-1.12.0。",
                 fontSize = 11.sp, color = muted, lineHeight = 16.sp)
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -320,7 +320,7 @@ fun CoreUpdateScreen(onBack: () -> Unit) {
                         Button(
                             onClick = {
                                 val url = appUpdateInfo!!.downloadUrl.ifEmpty {
-                                    "https://github.com/wancDDY/ST-Ctrl/releases"
+                                    "https://github.com/1288962ssdasd/ST-Ctrl/releases"
                                 }
                                 ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                             },
