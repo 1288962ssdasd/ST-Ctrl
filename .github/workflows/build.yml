@@ -1,4 +1,4 @@
-name: Build ST-Ctrl APK
+name: Build ST-Ctrl APK + Release
 
 on:
   push:
@@ -36,3 +36,33 @@ jobs:
         with:
           name: st-ctrl-debug
           path: tavern-app/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Get version
+        id: get_version
+        run: |
+          VERSION=$(cat tavern-app/app/src/main/assets/core/version.txt | tr -d '[:space:]')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          name: ST-Ctrl v${{ steps.get_version.outputs.version }}
+          body: |
+            ## ST-Ctrl v${{ steps.get_version.outputs.version }}
+
+            ### 更新内容
+            - 酒馆核心更新源已切换至本仓库
+            - 内置 PluginBridge 服务器（端口 3001）
+            - 自动 CI/CD 编译
+
+            ### 安装说明
+            1. 下载 APK
+            2. 在 Android 手机上允许「未知来源」安装
+            3. 安装并打开 APP
+          files: tavern-app/app/build/outputs/apk/debug/app-debug.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
