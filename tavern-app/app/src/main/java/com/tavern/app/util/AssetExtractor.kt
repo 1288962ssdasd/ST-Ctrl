@@ -99,6 +99,18 @@ object AssetExtractor {
         // Clean up temp ZIP
         tmpZip.delete()
 
+        // Copy plugin-bridge-server.js from assets (not inside tavern-core.zip)
+        try {
+            context.assets.open("core/plugin-bridge-server.js").use { input ->
+                FileOutputStream(File(coreDir, "plugin-bridge-server.js")).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            Log.i(TAG, "Copied plugin-bridge-server.js to core dir")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to copy plugin-bridge-server.js: ${e.message}")
+        }
+
         // Restore user-installed extensions
         val newExtDir = File(coreDir, "public/scripts/extensions/third-party")
         if (extBackup.exists()) {
