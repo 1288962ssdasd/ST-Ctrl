@@ -27,13 +27,28 @@ android {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
 
+    signingConfigs {
+        create("release") {
+            // Use debug keystore for release (same signature as debug)
+            storeFile = file("${project.rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

@@ -56,8 +56,9 @@ object UpdateChecker {
                 .find(entry)?.groupValues?.get(1)?.trim() ?: ""
             val changelog = content.replace(Regex("<[^>]+>"), "").take(500)
 
-            // Download the pre-patched zip from the release
-            val downloadUrl = "https://codeload.github.com/1288962ssdasd/ST-Ctrl/zip/refs/tags/$title"
+            // Download the pre-patched zip from the release assets
+            // GitHub release asset download URL pattern
+            val downloadUrl = "https://github.com/1288962ssdasd/ST-Ctrl/releases/download/$title/tavern-core.zip"
 
             ReleaseInfo(version = version, downloadUrl = downloadUrl, changelog = changelog)
         }

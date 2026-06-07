@@ -29,16 +29,16 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x tavern-app/gradlew
 
-      - name: Build Debug APK
+      - name: Build Release APK
         run: |
           cd tavern-app
-          ./gradlew assembleDebug
+          ./gradlew assembleRelease
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: st-ctrl-debug
-          path: tavern-app/app/build/outputs/apk/debug/app-debug.apk
+          name: st-ctrl-release
+          path: tavern-app/app/build/outputs/apk/release/app-release.apk
 
       - name: Get version and date
         id: get_info
@@ -47,7 +47,7 @@ jobs:
           DATE=$(date +'%Y%m%d')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "date=$DATE" >> $GITHUB_OUTPUT
-          echo "apk_path=tavern-app/app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
+          echo "apk_path=tavern-app/app/build/outputs/apk/release/app-release.apk" >> $GITHUB_OUTPUT
 
       - name: Create/Update Release
         uses: softprops/action-gh-release@v1
@@ -63,7 +63,8 @@ jobs:
               - 共享变量存储（命名空间、TTL、持久化）
               - 事件总线（WebSocket + HTTP）
               - AI API 代理（解决 CORS）
-            - ✅ 自动 CI/CD 编译
+            - ✅ 局域网访问支持（绑定 0.0.0.0）
+            - ✅ 自动 CI/CD 编译（Release 版本）
 
             ### 安装说明
             1. 下载下方 APK 文件
