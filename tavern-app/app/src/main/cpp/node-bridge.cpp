@@ -114,13 +114,13 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
         LOGI("Calling node::Start with entry: %s", entryPoint.c_str());
 
         // Build arguments for node::Start
+        // SillyTavern 使用 --listen 参数监听所有接口（而非 --host）
         std::string portArg = "--port=" + std::to_string(port);
-        std::string hostArg = "--host=0.0.0.0";
         char* argv[] = {
             const_cast<char*>("node"),
             const_cast<char*>(entryPoint.c_str()),
             const_cast<char*>(portArg.c_str()),
-            const_cast<char*>(hostArg.c_str()),
+            const_cast<char*>("--listen"),
             nullptr
         };
         int argc = 4;
