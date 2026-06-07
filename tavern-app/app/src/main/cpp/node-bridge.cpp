@@ -115,14 +115,16 @@ Java_com_tavern_app_node_NodeRunner_nativeStartNode(
 
         // Build arguments for node::Start
         std::string portArg = "--port=" + std::to_string(port);
+        std::string hostArg = "--host=0.0.0.0";
         char* argv[] = {
             const_cast<char*>("node"),
             const_cast<char*>("--harmony"),
             const_cast<char*>(entryPoint.c_str()),
             const_cast<char*>(portArg.c_str()),
+            const_cast<char*>(hostArg.c_str()),
             nullptr
         };
-        int argc = 4;
+        int argc = 5;
 
         int ret = nodeStart(argc, argv);
         LOGI("Node exited: %d", ret);
