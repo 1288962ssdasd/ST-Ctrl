@@ -109,7 +109,7 @@ dependencies {
     // R8 / Tink 混淆所需的注解库
     // Tink 加密库引用了这些注解，但它们是 compile-only 的，需要显式添加
     compileOnly("com.google.errorprone:error_prone_annotations:2.23.0")
-    compileOnly("javax.annotation:javax.annotation-api:1.3.2")
+    compileOnly("com.google.code.findbugs:jsr305:3.0.2")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
