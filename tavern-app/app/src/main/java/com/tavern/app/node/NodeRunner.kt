@@ -10,8 +10,8 @@ class NodeRunner(private val context: Context) {
 
     companion object {
         private const val TAG = "NodeRunner"
-        private const val STARTUP_TIMEOUT_MS = 120_000L
-        private const val PORT_CHECK_INTERVAL_MS = 500L
+        private const val STARTUP_TIMEOUT_MS = 300_000L  // 5 minutes (114MB zip + 96 deps on mobile)
+        private const val PORT_CHECK_INTERVAL_MS = 1000L  // Check every 1s instead of 500ms
 
         init {
             System.loadLibrary("node-bridge")
