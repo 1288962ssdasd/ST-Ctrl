@@ -1,7 +1,112 @@
+import java.net.URL
+import java.io.FileOutputStream
+import java.io.BufferedInputStream
+import java.util.zip.ZipFile
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// ======================================================================
+// 构建时自动准备酒馆核心代码 (tavern-core.zip)
+// 如果 assets/core/tavern-core.zip 为空或不存在，则从 wancDDY/ST-Ctrl 的
+// release APK 中提取一份有效的 tavern-core.zip
+// ======================================================================
+
+tasks.register("prepareTavernCore") {
+    description = "Extract tavern-core.zip from wancDDY/ST-Ctrl release APK"
+    group = "build"
+
+    val coreDir = file("src/main/assets/core")
+    val coreZip = file("${coreDir.absolutePath}/tavern-core.zip")
+
+    doFirst {
+        val needsDownload = !coreZip.exists() || coreZip.length() < 1024
+        if (!needsDownload) {
+            println("[tavern-core] tavern-core.zip 已存在 (${String.format("%.2f", coreZip.length() / 1048576.0)} MB)，跳过下载")
+            return@doFirst
+        }
+
+        println("[tavern-core] tavern-core.zip 为空或不存在，从 wancDDY/ST-Ctrl release APK 中提取…")
+
+        val repo = "wancDDY/ST-Ctrl"
+        val latestApi = URL("https://api.github.com/repos/$repo/releases/latest")
+        var apkUrl: String? = null
+
+        try {
+            val json = latestApi.readText(charset = Charsets.UTF_8)
+            // 找到第一个名字是 .apk 的浏览器下载地址
+            val apkPattern = """"browser_download_url":\s*"([^"]+\.apk)"""".toRegex()
+            val m = apkPattern.find(json)
+            if (m != null) apkUrl = m.groupValues[1]
+        } catch (e: Exception) {
+            throw GradleException("无法访问 GitHub API: ${e.message}")
+        }
+
+        if (apkUrl == null) {
+            throw GradleException("在 $repo 的 latest release 中找不到 .apk 资源，请手动将 tavern-core.zip 放入 $coreDir")
+        }
+
+        println("[tavern-core] APK 地址: $apkUrl")
+        coreDir.mkdirs()
+
+        // 先下载 APK 到临时文件
+        val tmpApk = file("${buildDir}/tmp-tavern-release.apk")
+        tmpApk.parentFile?.mkdirs()
+        if (tmpApk.exists() && tmpApk.length() > 1024 * 1024) {
+            println("[tavern-core] 缓存 APK 已存在 (${String.format("%.2f", tmpApk.length() / 1048576.0)} MB)，跳过下载")
+        } else {
+            println("[tavern-core] 正在下载 APK（首次运行较慢，约 300MB）…")
+            val conn = URL(apkUrl).openConnection()
+            conn.setRequestProperty("User-Agent", "ST-Ctrl-build")
+            conn.connectTimeout = 60000
+            conn.readTimeout = 600000
+            BufferedInputStream(conn.getInputStream()).use { input ->
+                FileOutputStream(tmpApk).use { output ->
+                    val buffer = ByteArray(1024 * 1024)
+                    var bytesRead: Int
+                    var total = 0L
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                        total += bytesRead
+                        if (total % (20 * 1024 * 1024) < buffer.size) {
+                            println("[tavern-core] 已下载 ${String.format("%.2f", total / 1048576.0)} MB…")
+                        }
+                    }
+                    println("[tavern-core] APK 下载完成，共 ${String.format("%.2f", total / 1048576.0)} MB")
+                }
+            }
+        }
+
+        // 从 APK 中提取 assets/core/tavern-core.zip
+        println("[tavern-core] 从 APK 中提取 tavern-core.zip…")
+        var extracted = false
+        ZipFile(tmpApk).use { zip ->
+            val entry = zip.getEntry("assets/core/tavern-core.zip")
+            if (entry == null) {
+                throw GradleException("APK 中找不到 assets/core/tavern-core.zip")
+            }
+            zip.getInputStream(entry).use { input ->
+                FileOutputStream(coreZip).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            extracted = true
+        }
+
+        if (!extracted || coreZip.length() < 1024) {
+            coreZip.delete()
+            throw GradleException("从 APK 提取的 tavern-core.zip 无效，请检查下载是否完整")
+        }
+
+        println("[tavern-core] 提取完成: ${coreZip.absolutePath} (${String.format("%.2f", coreZip.length() / 1048576.0)} MB)")
+    }
+}
+
+// 确保在资源处理之前完成下载
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Resources") }
+    .configureEach { dependsOn("prepareTavernCore") }
 
 android {
     namespace = "com.tavern.app"

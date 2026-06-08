@@ -16,7 +16,7 @@ object AssetExtractor {
     private const val TAG = "AssetExtractor"
     
     // GitHub repo for fallback download
-    private const val GITHUB_REPO = "1288962ssdasd/ST-Ctrl"
+    private const val GITHUB_REPO = "wancDDY/ST-Ctrl"
     private const val GITHUB_LATEST_RELEASE = "https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
     fun needsExtraction(context: Context): Boolean {
