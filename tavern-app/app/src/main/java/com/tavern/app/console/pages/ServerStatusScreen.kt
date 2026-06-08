@@ -114,13 +114,11 @@ fun ServerStatusScreen(
                             // Restart - we would need to trigger the same flow as MainActivity.startTavern()
                             // For now, let's just set the state and inform user to restart app
                             withContext(Dispatchers.Main) {
-                                androidx.compose.ui.platform.LocalContext.current.let { ctx ->
-                                    android.widget.Toast.makeText(
-                                        ctx,
-                                        "请重启APP以应用新端口设置",
-                                        android.widget.Toast.LENGTH_LONG
-                                    ).show()
-                                }
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "请重启APP以应用新端口设置",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
                             }
                         } finally {
                             isRestarting = false
