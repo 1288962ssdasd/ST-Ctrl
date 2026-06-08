@@ -84,6 +84,13 @@ fun ConsoleScreen(onEnterTavern: () -> Unit, onNavigate: (String) -> Unit) {
                         modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("extensions") })
                     ConsoleCard(icon = Icons.Outlined.CleaningServices, title = "清除缓存", modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("cache") })
                 }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ConsoleCard(icon = Icons.Outlined.Article, title = "日志查看", subtitle = "服务器日志",
+                        modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("logs") })
+                    ConsoleCard(icon = Icons.Outlined.Route, title = "路由调试", subtitle = "API路由管理",
+                        modifier = Modifier.weight(1f).fillMaxHeight(), surfaceColor = surface, onClick = { onNavigate("route_debug") })
+                }
                 Spacer(modifier = Modifier.weight(1f))
             }
         }

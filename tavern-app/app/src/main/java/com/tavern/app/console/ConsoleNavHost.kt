@@ -70,5 +70,11 @@ fun ConsoleNavHost(
         composable("settings") {
             SettingsScreen(onBack = { navController.popBackStack() })
         }
+        composable("logs") {
+            LogViewerScreen(onBack = { navController.popBackStack() })
+        }
+        composable("route_debug") {
+            RouteDebugScreen(onBack = { navController.popBackStack() })
+        }
     }
 }
