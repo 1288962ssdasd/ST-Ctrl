@@ -207,9 +207,12 @@ class MainActivity : ComponentActivity() {
                 val needsExtract = AssetExtractor.needsExtraction(this@MainActivity)
 
                 val coreDir = if (needsExtract) {
-                    NodeState.setProgress(0.05f, "正在解压核心代码…")
                     val extracted = withContext(Dispatchers.IO) {
-                        AssetExtractor.extractCore(this@MainActivity)
+                        AssetExtractor.extractCore(this@MainActivity) { progress, phase ->
+                            // Map progress to 0% → 25% for extraction phase
+                            val mappedProgress = progress * 0.25f
+                            NodeState.setProgress(mappedProgress, phase)
+                        }
                     }
                     val dir = extracted.getOrElse {
                         NodeState.setError("核心代码解压失败: ${it.message}")
