@@ -114,6 +114,83 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Spacer(modifier = Modifier.height(28.dp))
 
+            //  SECTION: 服务器设置
+            Text("服务器设置", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,
+                modifier = Modifier.padding(start = 4.dp, bottom = 10.dp))
+
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = surface,
+                tonalElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier.size(44.dp).clip(CircleShape)
+                                    .background(accent.copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Outlined.SettingsEthernet,
+                                    null, tint = accent, modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column {
+                                Text("服务器端口", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                                Text("修改后需要重启服务生效",
+                                    fontSize = 12.sp, color = muted)
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                    var portText by remember { mutableStateOf(SettingsState.serverPort.value.toString()) }
+                    var showError by remember { mutableStateOf(false) }
+                    OutlinedTextField(
+                        value = portText,
+                        onValueChange = {
+                            portText = it
+                            showError = false
+                        },
+                        label = { Text("端口号") },
+                        placeholder = { Text("8000") },
+                        singleLine = true,
+                        isError = showError,
+                        supportingText = {
+                            if (showError) {
+                                Text("请输入有效的端口号 (1024-65535)", color = MaterialTheme.colorScheme.error)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            val port = portText.toIntOrNull()
+                            if (port != null && port in 1024..65535) {
+                                SettingsState.setServerPort(ctx, port)
+                                Toast.makeText(ctx, "端口已设置为 $port，重启服务后生效", Toast.LENGTH_LONG).show()
+                            } else {
+                                showError = true
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = accent),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("保存端口设置")
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+
             //  SECTION: 性能模式
             Text("性能模式", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
                 color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,

@@ -227,7 +227,7 @@ class MainActivity : ComponentActivity() {
 
                 val result = nodeRunner.start(
                     coreDir = coreDir,
-                    port = TavernApplication.DEFAULT_PORT,
+                    port = com.tavern.app.console.SettingsState.getServerPort(this@MainActivity),
                     onProgress = { progress, phase ->
                         // remap 0..1 → 0.3..0.95
                         val mapped = 0.3f + progress * 0.65f

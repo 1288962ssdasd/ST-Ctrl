@@ -15,14 +15,20 @@ enum class PerfMode(val label: String, val key: String) {
 object SettingsState {
     private const val PREFS_NAME = "tavern_console_prefs"
     private const val KEY_PERF_MODE = "perf_mode"
+    private const val KEY_SERVER_PORT = "server_port"
+    private const val DEFAULT_PORT = 8000
 
     private val _perfMode = MutableStateFlow(PerfMode.FULL)
     val perfMode: StateFlow<PerfMode> = _perfMode.asStateFlow()
+
+    private val _serverPort = MutableStateFlow(DEFAULT_PORT)
+    val serverPort: StateFlow<Int> = _serverPort.asStateFlow()
 
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = prefs.getString(KEY_PERF_MODE, PerfMode.FULL.key) ?: PerfMode.FULL.key
         _perfMode.value = PerfMode.entries.firstOrNull { it.key == key } ?: PerfMode.FULL
+        _serverPort.value = prefs.getInt(KEY_SERVER_PORT, DEFAULT_PORT)
     }
 
     fun setPerfMode(context: Context, mode: PerfMode) {
@@ -33,6 +39,17 @@ object SettingsState {
         try {
             com.tavern.app.service.KeepAliveMonitor.reschedule(context)
         } catch (_: Exception) {}
+    }
+
+    fun setServerPort(context: Context, port: Int) {
+        _serverPort.value = port
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_SERVER_PORT, port).apply()
+    }
+
+    fun getServerPort(context: Context): Int {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(KEY_SERVER_PORT, DEFAULT_PORT)
     }
 
 

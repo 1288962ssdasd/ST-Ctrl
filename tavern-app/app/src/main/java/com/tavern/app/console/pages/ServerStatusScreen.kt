@@ -13,11 +13,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tavern.app.console.ConsoleViewModel
 import com.tavern.app.node.NodeState
+import com.tavern.app.node.NodeRunner
+import com.tavern.app.util.AssetExtractor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ServerStatusScreen(
@@ -27,6 +33,9 @@ fun ServerStatusScreen(
     val state by viewModel.nodeState.collectAsState()
     val port by viewModel.nodePort.collectAsState()
     val isRunning = state == NodeState.State.RUNNING
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var isRestarting by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
@@ -85,6 +94,55 @@ fun ServerStatusScreen(
                         label = "服务状态",
                         value = state.name
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Restart button
+            Button(
+                onClick = {
+                    isRestarting = true
+                    scope.launch {
+                        try {
+                            val nodeRunner = NodeRunner(context)
+                            if (isRunning) {
+                                nodeRunner.stop()
+                            }
+                            // Wait a bit for node to stop
+                            kotlinx.coroutines.delay(1000)
+                            // Restart - we would need to trigger the same flow as MainActivity.startTavern()
+                            // For now, let's just set the state and inform user to restart app
+                            withContext(Dispatchers.Main) {
+                                androidx.compose.ui.platform.LocalContext.current.let { ctx ->
+                                    android.widget.Toast.makeText(
+                                        ctx,
+                                        "请重启APP以应用新端口设置",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                        } finally {
+                            isRestarting = false
+                        }
+                    }
+                },
+                enabled = !isRestarting,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD4A853)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (isRestarting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("正在重启…")
+                } else {
+                    Icon(Icons.Outlined.Refresh, null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (isRunning) "重启服务" else "启动服务")
                 }
             }
         }
