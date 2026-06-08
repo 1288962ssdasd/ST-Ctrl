@@ -29,6 +29,11 @@ node_modules/
 *.zip
 *.log
 
+# 酒馆核心代码（体积过大，不进 git，由 Gradle 任务从本地/远端获取）
+tavern-app/app/src/main/assets/core/tavern-core.zip
+tavern-app/app/build/tmp-tavern-release.apk
+tavern-app/app/build/tmp-tavern-core.zip
+
 # OS
 .DS_Store
 Thumbs.db

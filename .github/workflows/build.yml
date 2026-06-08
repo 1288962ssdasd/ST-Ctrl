@@ -11,6 +11,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # 在仓库 Settings → Secrets and variables → Actions 中添加 TAVERN_CORE_URL
+      # 指向一个可公开下载的 tavern-core.zip 直链（例如 GitHub Release asset / 对象存储）
+      # 如果未设置，则自动从 wancDDY/ST-Ctrl 的 latest release APK 提取
+      TAVERN_CORE_URL: ${{ secrets.TAVERN_CORE_URL }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -28,6 +33,11 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x tavern-app/gradlew
+
+      - name: Prepare tavern-core.zip
+        run: |
+          cd tavern-app
+          ./gradlew prepareTavernCore --no-daemon
 
       - name: Build Release APK
         run: |
