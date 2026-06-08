@@ -2,7 +2,7 @@ name: Build ST-Ctrl APK + Auto Release
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, main, feature/log-viewer ]
   workflow_dispatch:
 
 permissions:
