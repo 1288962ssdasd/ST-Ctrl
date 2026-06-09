@@ -21,32 +21,11 @@ jobs:
         with:
           lfs: true
 
-      - name: Diagnose repository state
-        run: |
-          echo "=== Repo root ==="
-          ls -la
-          echo "=== tavern-app/ ==="
-          ls -la tavern-app/
-          echo "=== core file count ==="
-          find tavern-app/app/src/main/assets/core -type f 2>/dev/null | wc -l
-          echo "=== core dir size ==="
-          du -sh tavern-app/app/src/main/assets/core 2>/dev/null || echo "core dir missing"
-          echo "=== libnode.so ==="
-          ls -la tavern-app/app/src/main/jniLibs/*/libnode.so 2>/dev/null || echo "libnode.so missing"
-          echo "=== package.json exists ==="
-          ls -la tavern-app/app/src/main/assets/core/package.json 2>/dev/null || echo "package.json missing"
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-
-      - name: Set up Node.js (for npm install in tavern-core)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -65,57 +44,22 @@ jobs:
         run: chmod +x tavern-app/gradlew
 
       - name: Build Release APK
-        timeout-minutes: 40
-        id: build_apk
+        timeout-minutes: 30
         run: |
-          set -uo pipefail
           cd tavern-app
-          LOG_FILE=build-output.log
-          echo "=== Starting Gradle build ==="
-          # 不使用 set -e，以便手动捕获 Gradle 退出码
-          ./gradlew assembleRelease --no-daemon --stacktrace --info > $LOG_FILE 2>&1
-          BUILD_EXIT=$?
-          echo ""
-          echo "=== Build exit code: $BUILD_EXIT ==="
-          echo "=== Last 300 lines of build output ==="
-          tail -n 300 $LOG_FILE
-          echo ""
-          echo "=== Build exit code: $BUILD_EXIT ==="
-          if [ $BUILD_EXIT -ne 0 ]; then
-            echo "BUILD FAILED - showing error highlights:"
-            echo "--- grep for ERROR/FAIL/Exception ---"
-            grep -n -A3 -i "ERROR\|FAIL\|Exception\|Caused by" $LOG_FILE 2>/dev/null | head -200 || true
-            echo "--- end error highlights ---"
-            exit $BUILD_EXIT
-          fi
-          echo "build_exit=$BUILD_EXIT" >> $GITHUB_OUTPUT
-        env:
-          NODEJS_MOBILE_CI: true
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Verify APK exists
+      - name: Verify APK
         run: |
-          echo "=== Looking for APK ==="
-          find tavern-app/app/build/outputs -type f -name "*.apk" 2>/dev/null || echo "No APK files found"
-          echo "=== outputs directory ==="
-          ls -laR tavern-app/app/build/outputs/ 2>/dev/null || echo "outputs dir missing"
           APK="tavern-app/app/build/outputs/apk/release/app-release.apk"
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: Expected APK not found at $APK"
-            echo "=== Full build dir tree ==="
-            find tavern-app/app/build -type d 2>/dev/null | head -50
+          if [ -f "$APK" ]; then
+            SIZE=$(ls -lh "$APK" | awk '{print $5}')
+            echo "APK built successfully: $APK ($SIZE)"
+          else
+            echo "ERROR: APK not found at $APK"
+            ls -laR tavern-app/app/build/outputs/
             exit 1
           fi
-          echo "APK found: $(ls -lh $APK)"
-
-      - name: Show core state after build
-        if: always()
-        run: |
-          echo "=== core files after build ==="
-          find tavern-app/app/src/main/assets/core -maxdepth 1 -type f 2>/dev/null | head -20
-          echo "=== core size ==="
-          du -sh tavern-app/app/src/main/assets/core 2>/dev/null || echo "core missing"
-          echo "=== libnode.so after build ==="
-          ls -la tavern-app/app/src/main/jniLibs/*/libnode.so 2>/dev/null || echo "libnode.so still missing"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -126,13 +70,10 @@ jobs:
       - name: Get version and date
         id: get_info
         run: |
-          if [ -f "tavern-app/app/src/main/assets/core/package.json" ]; then
-            VERSION=$(node -e "console.log((JSON.parse(require('fs').readFileSync('tavern-app/app/src/main/assets/core/package.json','utf8'))).version || '')")
+          VERSION="1.0.0"
+          if [ -f "tavern-app/app/src/main/assets/core/update_info.json" ]; then
+            VERSION=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('tavern-app/app/src/main/assets/core/update_info.json','utf8')).version)}catch(e){console.log('1.0.0')}")
           fi
-          if [ -z "$VERSION" ] && [ -f "tavern-app/app/src/main/assets/core/version.txt" ]; then
-            VERSION=$(cat tavern-app/app/src/main/assets/core/version.txt | tr -d '[:space:]')
-          fi
-          if [ -z "$VERSION" ]; then VERSION="1.0.0"; fi
           DATE=$(date +'%Y%m%d')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "date=$DATE" >> $GITHUB_OUTPUT
@@ -147,20 +88,22 @@ jobs:
           body: |
             ## ST-Ctrl v${{ steps.get_info.outputs.version }}
 
+            ### 轻量壳 APP — 核心代码首次启动时自动下载
+            - 启动 APP 后自动从 GitHub Release 下载 `tavern-core.zip`（酒馆核心）
+            - 解压到 APP 数据目录后 Node.js 启动酒馆服务
+            - 之后更新核心：在仓库 Release 上传新的 `tavern-core.zip`，并在 `update_info.json` 中更新 `version` 字段，APP 下次启动会自动检测并更新
+
             ### 内置功能
-            - ✅ 酒馆核心自动更新（从本仓库拉取）
-            - ✅ PluginBridge 服务器（端口 3001）
-              - 共享变量存储（命名空间、TTL、持久化）
-              - 事件总线（WebSocket + HTTP）
-              - AI API 代理（解决 CORS）
-            - ✅ 局域网访问支持（绑定 0.0.0.0）
-            - ✅ 自动 CI/CD 编译（Release 版本）
+            - 基于 SillyTavern 的 AI 聊天前端
+            - Android WebView 展示 UI + Node.js 运行时驱动核心
+            - 端口可自定义（设置页面）
+            - 开发者模式支持侧载核心（手机本地目录替换核心代码）
 
             ### 安装说明
             1. 下载下方 APK 文件
             2. 在 Android 手机上允许「未知来源」安装
-            3. 安装并打开 APP
-            4. APP 会自动从本仓库检查并下载酒馆核心更新
+            3. 安装并打开 APP（首次启动需要联网下载核心）
+            4. 等待核心下载解压完成后即可使用
 
             ### 源码
             ${{ github.server_url }}/${{ github.repository }}

@@ -299,7 +299,7 @@ class MainActivity : ComponentActivity() {
             try {
                 NodeState.setStarting()
 
-                // 1) 如果开启了开发者模式且配置了侧载核心，直接走"侧载"路径，不走解压
+                // 1) 开发者模式 + 侧载核心优先级最高
                 val sideloadDir = com.tavern.app.util.DevCoreManager.resolveCoreDir(this@MainActivity)
                 val devMode = com.tavern.app.console.SettingsState.devMode.value
                 val isSideload = devMode &&
@@ -311,21 +311,46 @@ class MainActivity : ComponentActivity() {
                     NodeState.setProgress(0.25f, "使用侧载核心：${sideloadDir.name}")
                     sideloadDir
                 } else {
-                    val needsExtract = AssetExtractor.needsExtraction(this@MainActivity)
-                    if (needsExtract) {
-                        NodeState.setProgress(0.05f, "正在解压核心代码…")
-                        val extracted = withContext(Dispatchers.IO) {
-                            AssetExtractor.extractCore(this@MainActivity)
-                        }
-                        val dir = extracted.getOrElse {
-                            NodeState.setError("核心代码解压失败: ${it.message}")
-                            return@launch
-                        }
-                        NodeState.setProgress(0.25f, "解压完成")
-                        dir
+                    // 2) 尝试从 GitHub 下载/更新核心（轻量壳模式）
+                    val info = com.tavern.app.util.CoreUpdater.readUpdateInfo(this@MainActivity)
+                    val needsDownload = com.tavern.app.util.CoreUpdater.shouldUpdate(this@MainActivity, info)
+
+                    if (needsDownload != null) {
+                        NodeState.setProgress(0.02f, "准备下载核心 v$needsDownload…")
+                        val result = com.tavern.app.util.CoreUpdater.updateCore(
+                            context = this@MainActivity,
+                            info = info,
+                            onProgress = { p, phase -> NodeState.setProgress(p * 0.9f, phase) }
+                        )
+                        result.fold(
+                            onSuccess = { dir ->
+                                NodeState.setProgress(0.9f, "核心就绪")
+                                dir
+                            },
+                            onFailure = { err ->
+                                // 下载失败，回退模式：从内置核心
+                                NodeState.setProgress(0.5f, "下载失败：${err.message}，尝试内置核心…")
+                                val fallback = com.tavern.app.util.CoreUpdater.tryFallbackAsset(
+                                    this@MainActivity, info,
+                                    onProgress = { p, phase ->
+                                        NodeState.setProgress(0.5f + p * 0.4f, phase) }
+                                )
+                                fallback.fold(
+                                    onSuccess = { dir ->
+                                        NodeState.setProgress(0.9f, "使用内置核心")
+                                        dir
+                                    },
+                                    onFailure = { err2 ->
+                                        // 都失败了
+                                        NodeState.setError("无法获取核心: ${err.message}; ${err2.message}")
+                                        return@launch
+                                    }
+                                )
+                            }
+                        )
                     } else {
-                        NodeState.setProgress(0.25f, "核心代码已就绪")
-                        AssetExtractor.getCoreDir(this@MainActivity)
+                        NodeState.setProgress(0.25f, "核心已是最新（v${info.version}")
+                        com.tavern.app.util.CoreUpdater.getCoreDir(this@MainActivity)
                     }
                 }
 

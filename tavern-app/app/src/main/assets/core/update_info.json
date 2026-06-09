@@ -1,0 +1,11 @@
+{
+  "repo_owner": "1288962ssdasd",
+  "repo_name": "ST-Ctrl",
+  "release_tag": "latest",
+  "asset_name": "tavern-core.zip",
+  "version": "1.0.0",
+  "direct_url": "",
+  "sha256": "",
+  "fallback_zip_asset": "core/tavern-core.zip",
+  "fallback_mode": true
+}
