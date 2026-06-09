@@ -11,11 +11,30 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      JAVA_OPTS: -Xmx4g -XX:MaxMetaspaceSize=1g
+      GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           lfs: true
+
+      - name: Diagnose repository state
+        run: |
+          echo "=== Repo root ==="
+          ls -la
+          echo "=== tavern-app/ ==="
+          ls -la tavern-app/
+          echo "=== core file count ==="
+          find tavern-app/app/src/main/assets/core -type f 2>/dev/null | wc -l
+          echo "=== core dir size ==="
+          du -sh tavern-app/app/src/main/assets/core 2>/dev/null || echo "core dir missing"
+          echo "=== libnode.so ==="
+          ls -la tavern-app/app/src/main/jniLibs/*/libnode.so 2>/dev/null || echo "libnode.so missing"
+          echo "=== package.json exists ==="
+          ls -la tavern-app/app/src/main/assets/core/package.json 2>/dev/null || echo "package.json missing"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -32,14 +51,36 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('tavern-app/*.gradle*', 'tavern-app/**/*.gradle*', 'tavern-app/**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Grant execute permission for gradlew
         run: chmod +x tavern-app/gradlew
 
       - name: Build Release APK
-        timeout-minutes: 30
+        timeout-minutes: 40
         run: |
           cd tavern-app
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace --info 2>&1 | tail -500
+        env:
+          NODEJS_MOBILE_CI: true
+
+      - name: Show core state after build
+        if: always()
+        run: |
+          echo "=== core files after build ==="
+          find tavern-app/app/src/main/assets/core -maxdepth 1 -type f 2>/dev/null | head -20
+          echo "=== core size ==="
+          du -sh tavern-app/app/src/main/assets/core 2>/dev/null || echo "core missing"
+          echo "=== libnode.so after build ==="
+          ls -la tavern-app/app/src/main/jniLibs/*/libnode.so 2>/dev/null || echo "libnode.so still missing"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
