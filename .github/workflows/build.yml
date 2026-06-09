@@ -66,11 +66,46 @@ jobs:
 
       - name: Build Release APK
         timeout-minutes: 40
+        id: build_apk
         run: |
+          set -uo pipefail
           cd tavern-app
-          ./gradlew assembleRelease --no-daemon --stacktrace --info 2>&1 | tail -500
+          LOG_FILE=build-output.log
+          echo "=== Starting Gradle build ==="
+          # 不使用 set -e，以便手动捕获 Gradle 退出码
+          ./gradlew assembleRelease --no-daemon --stacktrace --info > $LOG_FILE 2>&1
+          BUILD_EXIT=$?
+          echo ""
+          echo "=== Build exit code: $BUILD_EXIT ==="
+          echo "=== Last 300 lines of build output ==="
+          tail -n 300 $LOG_FILE
+          echo ""
+          echo "=== Build exit code: $BUILD_EXIT ==="
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "BUILD FAILED - showing error highlights:"
+            echo "--- grep for ERROR/FAIL/Exception ---"
+            grep -n -A3 -i "ERROR\|FAIL\|Exception\|Caused by" $LOG_FILE 2>/dev/null | head -200 || true
+            echo "--- end error highlights ---"
+            exit $BUILD_EXIT
+          fi
+          echo "build_exit=$BUILD_EXIT" >> $GITHUB_OUTPUT
         env:
           NODEJS_MOBILE_CI: true
+
+      - name: Verify APK exists
+        run: |
+          echo "=== Looking for APK ==="
+          find tavern-app/app/build/outputs -type f -name "*.apk" 2>/dev/null || echo "No APK files found"
+          echo "=== outputs directory ==="
+          ls -laR tavern-app/app/build/outputs/ 2>/dev/null || echo "outputs dir missing"
+          APK="tavern-app/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: Expected APK not found at $APK"
+            echo "=== Full build dir tree ==="
+            find tavern-app/app/build -type d 2>/dev/null | head -50
+            exit 1
+          fi
+          echo "APK found: $(ls -lh $APK)"
 
       - name: Show core state after build
         if: always()
@@ -91,7 +126,6 @@ jobs:
       - name: Get version and date
         id: get_info
         run: |
-          # 优先从 package.json 读取 version；如果 package.json 不存在/没有 version 字段，回退到 version.txt
           if [ -f "tavern-app/app/src/main/assets/core/package.json" ]; then
             VERSION=$(node -e "console.log((JSON.parse(require('fs').readFileSync('tavern-app/app/src/main/assets/core/package.json','utf8'))).version || '')")
           fi
