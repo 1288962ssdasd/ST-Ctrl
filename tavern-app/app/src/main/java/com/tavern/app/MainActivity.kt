@@ -100,6 +100,101 @@ class MainActivity : ComponentActivity() {
         pendingFileCallback = null
     }
 
+    // 开发者模式：选择目录 / 选择 zip
+    private val pickDirLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val target = com.tavern.app.util.DevCoreManager.persistTreeUri(
+                        this@MainActivity, uri
+                    ).getOrThrow()
+                    com.tavern.app.console.SettingsState.setSideloadCoreDir(
+                        this@MainActivity, target.absolutePath
+                    )
+                    runOnUiThread {
+                        android.widget.Toast.makeText(
+                            this@MainActivity,
+                            "已设置为侧载核心：${target.name}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        android.widget.Toast.makeText(
+                            this@MainActivity,
+                            "读取目录失败：${e.message}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
+    private val pickZipLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    // 1) 把内容 URI 读入一个临时文件
+                    val tmp = java.io.File(cacheDir, "sideload-core.zip")
+                    contentResolver.openInputStream(uri)?.use { inp ->
+                        java.io.FileOutputStream(tmp).use { out -> inp.copyTo(out) }
+                    } ?: throw Exception("无法读取所选文件")
+
+                    // 2) 解压到 filesDir/sideload-core
+                    val target = java.io.File(filesDir, "sideload-core")
+                    if (target.exists()) target.deleteRecursively()
+                    com.tavern.app.util.DevCoreManager.extractZip(tmp, target)
+                        .getOrElse { throw it }
+                    tmp.delete()
+
+                    // 3) 写入 plugin-bridge-server.js
+                    try {
+                        assets.open("core/plugin-bridge-server.js").use { inp ->
+                            java.io.FileOutputStream(
+                                java.io.File(target, "plugin-bridge-server.js")
+                            ).use { out -> inp.copyTo(out) }
+                        }
+                    } catch (_: Exception) {}
+
+                    // 4) 确认目录有效
+                    if (!com.tavern.app.util.DevCoreManager.isValidCoreDir(target)) {
+                        target.deleteRecursively()
+                        throw Exception("压缩包中没有找到 server.js，请确认是正确的酒馆源码")
+                    }
+
+                    com.tavern.app.console.SettingsState.setSideloadCoreDir(
+                        this@MainActivity, target.absolutePath
+                    )
+                    runOnUiThread {
+                        android.widget.Toast.makeText(
+                            this@MainActivity,
+                            "已解压为侧载核心",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        android.widget.Toast.makeText(
+                            this@MainActivity,
+                            "解压失败：${e.message}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == "com.tavern.app.ENTER_TAVERN") {
@@ -145,7 +240,9 @@ class MainActivity : ComponentActivity() {
                         "console" -> ConsoleNavHost(
                             onBack = { },
                             startRoute = "home",
-                            onEnterTavern = { showWebView(NodeState.port.value) }
+                            onEnterTavern = { showWebView(NodeState.port.value) },
+                            onPickSideloadDir = { pickDirLauncher.launch(null) },
+                            onPickSideloadZip = { pickZipLauncher.launch("application/zip") }
                         )
                         else -> StartupScreen(onStart = { startTavern() })
                     }
@@ -202,32 +299,45 @@ class MainActivity : ComponentActivity() {
             try {
                 NodeState.setStarting()
 
-                // Extract core, map progress 0→30%
-                NodeState.setProgress(0f, "检查核心代码…")
-                val needsExtract = AssetExtractor.needsExtraction(this@MainActivity)
+                // 1) 如果开启了开发者模式且配置了侧载核心，直接走"侧载"路径，不走解压
+                val sideloadDir = com.tavern.app.util.DevCoreManager.resolveCoreDir(this@MainActivity)
+                val devMode = com.tavern.app.console.SettingsState.devMode.value
+                val isSideload = devMode &&
+                                 com.tavern.app.util.DevCoreManager.isValidCoreDir(sideloadDir)
 
-                val coreDir = if (needsExtract) {
-                    NodeState.setProgress(0.05f, "正在解压核心代码…")
-                    val extracted = withContext(Dispatchers.IO) {
-                        AssetExtractor.extractCore(this@MainActivity)
-                    }
-                    val dir = extracted.getOrElse {
-                        NodeState.setError("核心代码解压失败: ${it.message}")
-                        return@launch
-                    }
-                    NodeState.setProgress(0.25f, "解压完成")
-                    dir
+                NodeState.setProgress(0f, "检查核心代码…")
+
+                val coreDir = if (isSideload) {
+                    NodeState.setProgress(0.25f, "使用侧载核心：${sideloadDir.name}")
+                    sideloadDir
                 } else {
-                    NodeState.setProgress(0.25f, "核心代码已就绪")
-                    AssetExtractor.getCoreDir(this@MainActivity)
+                    val needsExtract = AssetExtractor.needsExtraction(this@MainActivity)
+                    if (needsExtract) {
+                        NodeState.setProgress(0.05f, "正在解压核心代码…")
+                        val extracted = withContext(Dispatchers.IO) {
+                            AssetExtractor.extractCore(this@MainActivity)
+                        }
+                        val dir = extracted.getOrElse {
+                            NodeState.setError("核心代码解压失败: ${it.message}")
+                            return@launch
+                        }
+                        NodeState.setProgress(0.25f, "解压完成")
+                        dir
+                    } else {
+                        NodeState.setProgress(0.25f, "核心代码已就绪")
+                        AssetExtractor.getCoreDir(this@MainActivity)
+                    }
                 }
 
+                // 2) 使用自定义端口（默认 8000，可在设置页面更改）
+                val port = com.tavern.app.console.SettingsState.customPort.value
+
                 // Start Node, map progress 30→95%
-                NodeState.setProgress(0.3f, "启动酒馆服务…")
+                NodeState.setProgress(0.3f, "启动酒馆服务（端口 $port）…")
 
                 val result = nodeRunner.start(
                     coreDir = coreDir,
-                    port = TavernApplication.DEFAULT_PORT,
+                    port = port,
                     onProgress = { progress, phase ->
                         // remap 0..1 → 0.3..0.95
                         val mapped = 0.3f + progress * 0.65f
@@ -301,7 +411,9 @@ class MainActivity : ComponentActivity() {
                     ConsoleNavHost(
                         onBack = { },
                         startRoute = "home",
-                        onEnterTavern = { showWebView(port) }
+                        onEnterTavern = { showWebView(port) },
+                        onPickSideloadDir = { pickDirLauncher.launch(null) },
+                        onPickSideloadZip = { pickZipLauncher.launch("application/zip") }
                     )
                 }
             }

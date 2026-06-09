@@ -28,7 +28,11 @@ import com.tavern.app.console.ThemeState
 import kotlinx.coroutines.launch
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(
+    onBack: () -> Unit,
+    onPickDir: (() -> Unit)? = null,
+    onPickZip: (() -> Unit)? = null
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val isDark by ThemeState.isDarkMode.collectAsState()
@@ -172,6 +176,186 @@ fun SettingsScreen(onBack: () -> Unit) {
             Spacer(modifier = Modifier.height(36.dp))
 
             //  SECTION: 版权 & 免责声明
+            // ── SECTION: 开发者模式 ──────────────────────────────────
+            val devModeState by com.tavern.app.console.SettingsState.devMode.collectAsState()
+            val sideloadPath by com.tavern.app.console.SettingsState.sideloadCoreDir.collectAsState()
+            val customPort by com.tavern.app.console.SettingsState.customPort.collectAsState()
+
+            Text("开发者模式", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,
+                modifier = Modifier.padding(start = 4.dp, bottom = 10.dp))
+            Text("用于频繁修改酒馆源码 / 插件调试的模式。开启后可从外部目录加载核心代码，无需重新打包 APK。",
+                fontSize = 12.sp, color = muted.copy(alpha = 0.7f))
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 开发者模式开关
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = surface,
+                tonalElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp))
+                                .background(accent.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("🛠", fontSize = 20.sp)
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column {
+                            Text("启用开发者模式", fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold, color = onSurface)
+                            Text(if (devModeState) "已启用，加载外部核心" else "关闭时使用内置核心",
+                                fontSize = 12.sp, color = muted)
+                        }
+                    }
+                    Switch(
+                        checked = devModeState,
+                        onCheckedChange = {
+                            com.tavern.app.console.SettingsState.setDevMode(ctx, it)
+                            if (it) {
+                                Toast.makeText(ctx, "已启用开发者模式", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(ctx, "已关闭开发者模式", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = accent,
+                            uncheckedThumbColor = muted,
+                            uncheckedTrackColor = divider
+                        )
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 侧载核心目录 / 端口
+            if (devModeState) {
+                // 核心目录选择
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = surface,
+                    tonalElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("核心代码目录", fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold, color = onSurface)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            sideloadPath?.let {
+                                val d = java.io.File(it)
+                                com.tavern.app.util.DevCoreManager.describe(d)
+                            } ?: "尚未选择，先把酒馆源码（含 server.js）拷到手机任意目录，然后点击下方按钮选择",
+                            fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row {
+                            // 选择目录：通过 SAF 选择
+                            OutlinedButton(
+                                onClick = { onPickDir?.invoke() },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = accent
+                                )
+                            ) { Text("选择目录") }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            // 输入 zip 路径
+                            OutlinedButton(
+                                onClick = { onPickZip?.invoke() },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = accent
+                                )
+                            ) { Text("选择 zip 文件") }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            // 清除
+                            OutlinedButton(
+                                onClick = {
+                                    com.tavern.app.console.SettingsState.setSideloadCoreDir(ctx, null)
+                                    Toast.makeText(ctx, "已清除侧载核心", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = muted
+                                )
+                            ) { Text("清除") }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "说明：把解压后的酒馆源码放到手机任意目录，点击「选择目录」即可。" +
+                                    "下次启动 APP 时将使用这里的核心运行。",
+                            fontSize = 11.sp, color = muted.copy(alpha = 0.8f),
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 端口设置
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = surface,
+                    tonalElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Text("服务端口", fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold, color = onSurface)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "当前端口：$customPort（默认 8000）",
+                            fontSize = 12.sp, color = muted
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val portText = remember { mutableStateOf(customPort.toString()) }
+                            OutlinedTextField(
+                                value = portText.value,
+                                onValueChange = { v -> portText.value = v.filter { it.isDigit() } },
+                                label = { Text("端口号") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Button(
+                                onClick = {
+                                    val new = portText.value.toIntOrNull()
+                                    if (new != null && new in 1024..65535) {
+                                        com.tavern.app.console.SettingsState.setCustomPort(ctx, new)
+                                        Toast.makeText(ctx, "端口改为 $new，重启 APP 生效", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        Toast.makeText(ctx, "端口需在 1024~65535", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = accent.copy(alpha = 0.15f),
+                                    contentColor = accent
+                                )
+                            ) { Text("保存") }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(28.dp))
+            }
+
+            // ── SECTION: 关于 ──────────────────────────────────
             Text("关于", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
                 color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,
                 modifier = Modifier.padding(start = 4.dp, bottom = 10.dp))

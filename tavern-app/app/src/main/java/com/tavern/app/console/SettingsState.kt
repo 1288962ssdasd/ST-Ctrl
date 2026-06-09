@@ -15,24 +15,56 @@ enum class PerfMode(val label: String, val key: String) {
 object SettingsState {
     private const val PREFS_NAME = "tavern_console_prefs"
     private const val KEY_PERF_MODE = "perf_mode"
+    private const val KEY_DEV_MODE = "dev_mode_enabled"
+    private const val KEY_SIDELOAD_CORE_DIR = "sideload_core_dir"
+    private const val KEY_CUSTOM_PORT = "custom_port"
 
     private val _perfMode = MutableStateFlow(PerfMode.FULL)
     val perfMode: StateFlow<PerfMode> = _perfMode.asStateFlow()
+
+    private val _devMode = MutableStateFlow(false)
+    val devMode: StateFlow<Boolean> = _devMode.asStateFlow()
+
+    private val _sideloadCoreDir = MutableStateFlow<String?>(null)
+    val sideloadCoreDir: StateFlow<String?> = _sideloadCoreDir.asStateFlow()
+
+    private val _customPort = MutableStateFlow(8000)
+    val customPort: StateFlow<Int> = _customPort.asStateFlow()
 
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val key = prefs.getString(KEY_PERF_MODE, PerfMode.FULL.key) ?: PerfMode.FULL.key
         _perfMode.value = PerfMode.entries.firstOrNull { it.key == key } ?: PerfMode.FULL
+        _devMode.value = prefs.getBoolean(KEY_DEV_MODE, false)
+        _sideloadCoreDir.value = prefs.getString(KEY_SIDELOAD_CORE_DIR, null)
+        _customPort.value = prefs.getInt(KEY_CUSTOM_PORT, 8000)
     }
 
     fun setPerfMode(context: Context, mode: PerfMode) {
         _perfMode.value = mode
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putString(KEY_PERF_MODE, mode.key).apply()
-        // Reschedule keep-alive alarm with the new interval
         try {
             com.tavern.app.service.KeepAliveMonitor.reschedule(context)
         } catch (_: Exception) {}
+    }
+
+    fun setDevMode(context: Context, enabled: Boolean) {
+        _devMode.value = enabled
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_DEV_MODE, enabled).apply()
+    }
+
+    fun setSideloadCoreDir(context: Context, path: String?) {
+        _sideloadCoreDir.value = path
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(KEY_SIDELOAD_CORE_DIR, path).apply()
+    }
+
+    fun setCustomPort(context: Context, port: Int) {
+        _customPort.value = port
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_CUSTOM_PORT, port).apply()
     }
 
 
