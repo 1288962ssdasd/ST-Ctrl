@@ -101,9 +101,46 @@ tasks.register("downloadNodejsMobile") {
     }
 }
 
-// 在 preBuild 之前执行下载
+// ---------- npm install for tavern-core node_modules ----------
+// 在构建前为 assets/core 运行 npm install，生成 node_modules 并打入 APK
+val coreDir = layout.projectDirectory.dir("src/main/assets/core").asFile
+
+tasks.register("npmInstallCore") {
+    group = "nodejs-mobile"
+    description = "Run npm install in assets/core to generate node_modules"
+
+    outputs.upToDateWhen {
+        // 如果 assets/core/node_modules 已经存在且非空，则跳过
+        val nm = File(coreDir, "node_modules")
+        nm.exists() && nm.listFiles()?.isNotEmpty() == true
+    }
+
+    doLast {
+        val pkgJson = File(coreDir, "package.json")
+        if (!pkgJson.exists()) {
+            println("[npm-install] No package.json in assets/core, skipping npm install")
+            return@doLast
+        }
+        if (!coreDir.exists()) {
+            throw GradleException("assets/core directory not found: ${coreDir.absolutePath}")
+        }
+        println("[npm-install] Running 'npm install --omit=dev' in ${coreDir.absolutePath}")
+        val proc = ProcessBuilder("npm", "install", "--omit=dev", "--no-audit", "--no-fund")
+            .directory(coreDir)
+            .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+            .redirectError(ProcessBuilder.Redirect.INHERIT)
+            .start()
+        val exitCode = proc.waitFor()
+        if (exitCode != 0) {
+            throw GradleException("npm install failed with exit code $exitCode")
+        }
+        println("[npm-install] Done. node_modules generated in assets/core")
+    }
+}
+
+// 在 preBuild 之前执行下载 + npm install
 tasks.named("preBuild") {
-    dependsOn("downloadNodejsMobile")
+    dependsOn("downloadNodejsMobile", "npmInstallCore")
 }
 
 android {
