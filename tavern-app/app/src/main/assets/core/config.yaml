@@ -1,0 +1,8 @@
+# SillyTavern configuration
+# Auto-generated defaults will fill in missing values
+listen: false
+port: 8000
+whitelistMode: false
+enableExtensions: true
+browserLaunch:
+  browser: default
