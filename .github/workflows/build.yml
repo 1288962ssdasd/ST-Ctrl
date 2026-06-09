@@ -36,9 +36,10 @@ jobs:
         run: chmod +x tavern-app/gradlew
 
       - name: Build Release APK
+        timeout-minutes: 30
         run: |
           cd tavern-app
-          ./gradlew assembleRelease
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
