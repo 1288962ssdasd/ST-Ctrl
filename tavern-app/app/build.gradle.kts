@@ -1,6 +1,109 @@
+import java.util.zip.ZipFile
+import java.io.BufferedOutputStream
+import java.io.FileOutputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// ---------- Node.js Mobile Runtime Download ----------
+// 从 nodejs-mobile 的社区维护版本下载真正的 libnode.so (arm64-v8a, armeabi-v7a, x86_64)
+// 这避免了把 50MB+ 的二进制文件放入 Git 仓库 / LFS
+// 参考: https://github.com/nodejs-mobile/nodejs-mobile/releases
+val nodejsMobileVersion = "18.20.4"
+val nodejsMobileUrl = "https://github.com/nodejs-mobile/nodejs-mobile/releases/download/v${nodejsMobileVersion}/nodejs-mobile-v${nodejsMobileVersion}-android.zip"
+val nodejsMobileZip = layout.buildDirectory.file("tmp-nodejs/nodejs-mobile.zip").get().asFile
+val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs").asFile
+
+// ABI 在 zip 中的目录名 -> Android ABI 名
+val abiMap = mapOf(
+    "arm64" to "arm64-v8a",
+    "arm" to "armeabi-v7a",
+    "x86_64" to "x86_64"
+)
+
+tasks.register("downloadNodejsMobile") {
+    group = "nodejs-mobile"
+    description = "Download Node.js for Mobile Apps shared libraries (libnode.so)"
+
+    outputs.upToDateWhen {
+        // 如果三个目标平台的 libnode.so 都已存在且 > 1MB，则跳过
+        listOf("arm64-v8a", "armeabi-v7a", "x86_64").all { abi ->
+            val f = File(jniLibsDir, "$abi/libnode.so")
+            f.exists() && f.length() > 1_000_000
+        }
+    }
+
+    doLast {
+        nodejsMobileZip.parentFile.mkdirs()
+
+        // 下载 zip（带简单缓存检查）
+        if (!nodejsMobileZip.exists() || nodejsMobileZip.length() < 5_000_000) {
+            println("[nodejs-mobile] Downloading v${nodejsMobileVersion}...")
+            val conn = java.net.URI(nodejsMobileUrl).toURL().openConnection() as java.net.HttpURLConnection
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("User-Agent", "tavern-app-builder")
+            conn.connect()
+            if (conn.responseCode !in 200..299) {
+                throw GradleException("Failed to download Node.js Mobile: HTTP ${conn.responseCode}")
+            }
+            conn.inputStream.use { input ->
+                BufferedOutputStream(FileOutputStream(nodejsMobileZip)).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            println("[nodejs-mobile] Downloaded ${nodejsMobileZip.length()} bytes")
+        } else {
+            println("[nodejs-mobile] Using cached zip (${nodejsMobileZip.length()} bytes)")
+        }
+
+        // 在 zip 中自动搜索 libnode.so 的位置
+        val foundPaths = mutableMapOf<String, String>() // abi -> zipPath
+        ZipFile(nodejsMobileZip).use { zip ->
+            val entries = zip.entries()
+            while (entries.hasMoreElements()) {
+                val e = entries.nextElement()
+                val name = e.name
+                if (name.endsWith("libnode.so") && !e.isDirectory) {
+                    for ((zipAbi, androidAbi) in abiMap) {
+                        if (name.contains(zipAbi) && zipAbi !in foundPaths) {
+                            foundPaths[zipAbi] = name
+                        }
+                    }
+                }
+            }
+        }
+
+        if (foundPaths.isEmpty()) {
+            throw GradleException("No libnode.so found in the downloaded zip!")
+        }
+        println("[nodejs-mobile] Found libnode.so paths in zip: $foundPaths")
+
+        // 解压 libnode.so 到 jniLibs/
+        ZipFile(nodejsMobileZip).use { zip ->
+            for ((zipAbi, androidAbi) in abiMap) {
+                val zipPath = foundPaths[zipAbi] ?: continue
+                val entry = zip.getEntry(zipPath) ?: continue
+                val outDir = File(jniLibsDir, androidAbi)
+                outDir.mkdirs()
+                val outFile = File(outDir, "libnode.so")
+                zip.getInputStream(entry).use { ins ->
+                    FileOutputStream(outFile).use { ous ->
+                        ins.copyTo(ous)
+                    }
+                }
+                println("[nodejs-mobile] $androidAbi: ${outFile.length()} bytes -> ${outFile.absolutePath}")
+            }
+        }
+
+        println("[nodejs-mobile] Done. Node.js runtime ready for packaging.")
+    }
+}
+
+// 在 preBuild 之前执行下载
+tasks.named("preBuild") {
+    dependsOn("downloadNodejsMobile")
 }
 
 android {
