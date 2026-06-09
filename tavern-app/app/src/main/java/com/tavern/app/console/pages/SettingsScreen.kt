@@ -1,0 +1,435 @@
+package com.tavern.app.console.pages
+
+import androidx.compose.animation.*
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.tavern.app.console.PerfMode
+import com.tavern.app.console.SettingsState
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import com.tavern.app.console.ThemeState
+import kotlinx.coroutines.launch
+
+@Composable
+fun SettingsScreen(
+    onBack: () -> Unit,
+    onPickDir: (() -> Unit)? = null,
+    onPickZip: (() -> Unit)? = null
+) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val isDark by ThemeState.isDarkMode.collectAsState()
+    val currentPerf by SettingsState.perfMode.collectAsState()
+
+    val accent = Color(0xFFD4A853)
+    val bg = MaterialTheme.colorScheme.background
+    val surface = MaterialTheme.colorScheme.surface
+    val onBg = MaterialTheme.colorScheme.onBackground
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val muted = onBg.copy(alpha = 0.55f)
+    val divider = onBg.copy(alpha = 0.08f)
+
+    fun perfMeta(mode: PerfMode): Pair<String, String> = when (mode) {
+        PerfMode.FULL     -> "性能优先" to "高渲染 · 5分钟保活 · 默认缓存"
+        PerfMode.LIGHT    -> "轻度优化" to "普通渲染 · 10分钟保活 · 优先本地缓存"
+        PerfMode.BALANCED -> "均衡模式" to "普通渲染 · 15分钟保活 · 优先本地缓存"
+        PerfMode.SAVE     -> "深度优化" to "普通渲染 · 30分钟保活 · 优先本地缓存"
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(bg)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp)
+        ) {
+            TextButton(onClick = onBack) { Text("← 返回", color = accent, fontSize = 15.sp) }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("设置", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = onBg, letterSpacing = 1.sp)
+            Text("外观 · 性能 · 关于", fontSize = 13.sp, color = muted)
+            Spacer(modifier = Modifier.height(28.dp))
+
+            //  SECTION: 外观
+            Text("外观", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,
+                modifier = Modifier.padding(start = 4.dp, bottom = 10.dp))
+
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = surface,
+                tonalElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { scope.launch { ThemeState.toggle(ctx) } }
+                        .padding(18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(44.dp).clip(CircleShape)
+                                .background(accent.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                if (isDark) Icons.Outlined.DarkMode else Icons.Outlined.LightMode,
+                                null, tint = accent, modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column {
+                            Text("主题模式", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                            Text(if (isDark) "深色模式" else "浅色模式",
+                                fontSize = 12.sp, color = muted)
+                        }
+                    }
+                    Switch(
+                        checked = isDark,
+                        onCheckedChange = { scope.launch { ThemeState.toggle(ctx) } },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = accent,
+                            uncheckedThumbColor = muted,
+                            uncheckedTrackColor = divider
+                        )
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            //  SECTION: 性能模式
+            Text("性能模式", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,
+                modifier = Modifier.padding(start = 4.dp, bottom = 6.dp))
+            Text("根据需求选择性能策略，降低发热与耗电",
+                fontSize = 12.sp, color = muted.copy(alpha = 0.7f))
+            Spacer(modifier = Modifier.height(14.dp))
+
+            PerfMode.entries.forEach { mode ->
+                val selected = currentPerf == mode
+                val (title, subtitle) = perfMeta(mode)
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (selected) accent.copy(alpha = 0.1f) else surface,
+                    border = if (selected) BorderStroke(1.dp, accent.copy(alpha = 0.35f))
+                    else BorderStroke(0.5.dp, divider),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)
+                        .clickable { SettingsState.setPerfMode(ctx, mode) }
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier.size(22.dp).clip(CircleShape)
+                                .border(2.dp, if (selected) accent else muted.copy(alpha = 0.35f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (selected)
+                                Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(accent))
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(title, fontSize = 15.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = if (selected) accent else onSurface)
+                            Text(subtitle, fontSize = 12.sp,
+                                color = if (selected) accent.copy(alpha = 0.7f) else muted,
+                                lineHeight = 18.sp)
+                        }
+                        Icon(
+                            when (mode) {
+                                PerfMode.FULL     -> Icons.Outlined.Bolt
+                                PerfMode.LIGHT    -> Icons.Outlined.Speed
+                                PerfMode.BALANCED -> Icons.Outlined.Tune
+                                PerfMode.SAVE     -> Icons.Outlined.BatterySaver
+                            }, null,
+                            tint = if (selected) accent else muted.copy(alpha = 0.3f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(36.dp))
+
+            //  SECTION: 版权 & 免责声明
+            // ── SECTION: 开发者模式 ──────────────────────────────────
+            val devModeState by com.tavern.app.console.SettingsState.devMode.collectAsState()
+            val sideloadPath by com.tavern.app.console.SettingsState.sideloadCoreDir.collectAsState()
+            val customPort by com.tavern.app.console.SettingsState.customPort.collectAsState()
+
+            Text("开发者模式", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,
+                modifier = Modifier.padding(start = 4.dp, bottom = 10.dp))
+            Text("用于频繁修改酒馆源码 / 插件调试的模式。开启后可从外部目录加载核心代码，无需重新打包 APK。",
+                fontSize = 12.sp, color = muted.copy(alpha = 0.7f))
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // 开发者模式开关
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = surface,
+                tonalElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp))
+                                .background(accent.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("🛠", fontSize = 20.sp)
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column {
+                            Text("启用开发者模式", fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold, color = onSurface)
+                            Text(if (devModeState) "已启用，加载外部核心" else "关闭时使用内置核心",
+                                fontSize = 12.sp, color = muted)
+                        }
+                    }
+                    Switch(
+                        checked = devModeState,
+                        onCheckedChange = {
+                            com.tavern.app.console.SettingsState.setDevMode(ctx, it)
+                            if (it) {
+                                Toast.makeText(ctx, "已启用开发者模式", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(ctx, "已关闭开发者模式", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = accent,
+                            uncheckedThumbColor = muted,
+                            uncheckedTrackColor = divider
+                        )
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 侧载核心目录 / 端口
+            if (devModeState) {
+                // 核心目录选择
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = surface,
+                    tonalElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("核心代码目录", fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold, color = onSurface)
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            sideloadPath?.let {
+                                val d = java.io.File(it)
+                                com.tavern.app.util.DevCoreManager.describe(d)
+                            } ?: "尚未选择，先把酒馆源码（含 server.js）拷到手机任意目录，然后点击下方按钮选择",
+                            fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row {
+                            // 选择目录：通过 SAF 选择
+                            OutlinedButton(
+                                onClick = { onPickDir?.invoke() },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = accent
+                                )
+                            ) { Text("选择目录") }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            // 输入 zip 路径
+                            OutlinedButton(
+                                onClick = { onPickZip?.invoke() },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = accent
+                                )
+                            ) { Text("选择 zip 文件") }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            // 清除
+                            OutlinedButton(
+                                onClick = {
+                                    com.tavern.app.console.SettingsState.setSideloadCoreDir(ctx, null)
+                                    Toast.makeText(ctx, "已清除侧载核心", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = muted
+                                )
+                            ) { Text("清除") }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "说明：把解压后的酒馆源码放到手机任意目录，点击「选择目录」即可。" +
+                                    "下次启动 APP 时将使用这里的核心运行。",
+                            fontSize = 11.sp, color = muted.copy(alpha = 0.8f),
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 端口设置
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = surface,
+                    tonalElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Text("服务端口", fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold, color = onSurface)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "当前端口：$customPort（默认 8000）",
+                            fontSize = 12.sp, color = muted
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val portText = remember { mutableStateOf(customPort.toString()) }
+                            OutlinedTextField(
+                                value = portText.value,
+                                onValueChange = { v -> portText.value = v.filter { it.isDigit() } },
+                                label = { Text("端口号") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Button(
+                                onClick = {
+                                    val new = portText.value.toIntOrNull()
+                                    if (new != null && new in 1024..65535) {
+                                        com.tavern.app.console.SettingsState.setCustomPort(ctx, new)
+                                        Toast.makeText(ctx, "端口改为 $new，重启 APP 生效", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        Toast.makeText(ctx, "端口需在 1024~65535", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = accent.copy(alpha = 0.15f),
+                                    contentColor = accent
+                                )
+                            ) { Text("保存") }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(28.dp))
+            }
+
+            // ── SECTION: 关于 ──────────────────────────────────
+            Text("关于", fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+                color = accent.copy(alpha = 0.7f), letterSpacing = 2.sp,
+                modifier = Modifier.padding(start = 4.dp, bottom = 10.dp))
+
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = surface,
+                tonalElevation = 1.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text("ST Ctrl v1.0.0", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "本应用是 SillyTavern（酒馆）的 Android 容器/外壳程序，" +
+                                "提供 Android 设备上的 Node.js 运行环境、前台服务保活、" +
+                                "WebView 访问、备份还原、扩展管理等便利功能。",
+                        fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    HorizontalDivider(color = divider)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("作者：wancDDY", fontSize = 13.sp, color = onSurface)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("github.com/wancDDY/ST-Ctrl",
+                            fontSize = 12.sp, color = accent,
+                            modifier = Modifier.clickable {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/wancDDY/ST-Ctrl"))
+                                ctx.startActivity(intent)
+                            })
+                        IconButton(onClick = {
+                            val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("", "https://github.com/wancDDY/ST-Ctrl"))
+                            Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
+                        }, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Outlined.ContentCopy, null, tint = muted, modifier = Modifier.size(14.dp))
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("基于 SillyTavern 构建 · MIT 开源", fontSize = 12.sp, color = muted)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("版权归属", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "SillyTavern（酒馆）是开源项目，版权归其原始作者及社区贡献者所有。" +
+                                "项目地址：github.com/SillyTavern/SillyTavern\n\n" +
+                                "本应用（ST Ctrl）是 SillyTavern 的 Android 容器程序，" +
+                                "提供在 Android 设备上运行酒馆所需的环境和便利功能，" +
+                                "不修改酒馆的任何源代码或功能逻辑，" +
+                                "亦非 SillyTavern 官方产品。",
+                        fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("免责声明", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "本应用仅供学习交流使用，不提供 AI 模型服务。\n\n" +
+                                "使用本应用与第三方 AI API 交互所产生的费用、" +
+                                "内容及合规性问题，由用户自行承担。" +
+                                "请遵守相关服务条款和法律法规。\n\n" +
+                                "安装第三方扩展时请注意来源可信度。",
+                        fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("技术栈", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Kotlin · Jetpack Compose · Node.js (embedded) · WebView · Android Foreground Service",
+                        fontSize = 12.sp, color = muted, lineHeight = 18.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(40.dp))
+        }
+    }
+}

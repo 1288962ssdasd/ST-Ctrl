@@ -2,7 +2,7 @@ name: Build ST-Ctrl APK + Auto Release
 
 on:
   push:
-    branches: [ master, main, feature/log-viewer ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 permissions:
@@ -11,11 +11,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      # 在仓库 Settings → Secrets and variables → Actions 中添加 TAVERN_CORE_URL
-      # 指向一个可公开下载的 tavern-core.zip 直链（例如 GitHub Release asset / 对象存储）
-      # 如果未设置，则自动从 wancDDY/ST-Ctrl 的 latest release APK 提取
-      TAVERN_CORE_URL: ${{ secrets.TAVERN_CORE_URL }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -28,16 +23,17 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Set up Node.js (for npm install in tavern-core)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: 'https://registry.npmjs.org'
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Grant execute permission for gradlew
         run: chmod +x tavern-app/gradlew
-
-      - name: Prepare tavern-core.zip
-        run: |
-          cd tavern-app
-          ./gradlew prepareTavernCore --no-daemon
 
       - name: Build Release APK
         run: |
@@ -53,11 +49,19 @@ jobs:
       - name: Get version and date
         id: get_info
         run: |
-          VERSION=$(cat tavern-app/app/src/main/assets/core/version.txt | tr -d '[:space:]')
+          # 优先从 package.json 读取 version；如果 package.json 不存在/没有 version 字段，回退到 version.txt
+          if [ -f "tavern-app/app/src/main/assets/core/package.json" ]; then
+            VERSION=$(node -e "console.log((JSON.parse(require('fs').readFileSync('tavern-app/app/src/main/assets/core/package.json','utf8'))).version || '')")
+          fi
+          if [ -z "$VERSION" ] && [ -f "tavern-app/app/src/main/assets/core/version.txt" ]; then
+            VERSION=$(cat tavern-app/app/src/main/assets/core/version.txt | tr -d '[:space:]')
+          fi
+          if [ -z "$VERSION" ]; then VERSION="1.0.0"; fi
           DATE=$(date +'%Y%m%d')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "date=$DATE" >> $GITHUB_OUTPUT
           echo "apk_path=tavern-app/app/build/outputs/apk/release/app-release.apk" >> $GITHUB_OUTPUT
+          echo "Resolved version: $VERSION (date: $DATE)"
 
       - name: Create/Update Release
         uses: softprops/action-gh-release@v1
