@@ -247,10 +247,44 @@ app.use('/api/users', usersPublicRouter);
 // ==================== AI API 代理路由（公开访问，解决前端 CORS 问题）====================
 // 注册在 requireLoginMiddleware 之前，使移动端插件可在登录前调用
 // 插件 AIService 通过 /api/plugins/xb-bridge-test/ai/proxy 访问，转发到真实的 LLM API
+//
+// 完整端点清单（对应 SillyTavernAdapter / DataStore 的请求）：
+//   GET  /health                          - 启动时健康检查 (adapter 第50行)
+//   GET  /ping                            - 健康检查 (备用)
+//   POST /ai/proxy                        - AI API 代理 (AIService 第86行)
+//   GET  /ai/proxy/health                 - AI 代理健康检查
+//   GET  /var/:key                        - 读取变量 (adapter 第150行)
+//   POST /var/:key                        - 写入变量 (adapter 第177行, data-store 第76行)
+//   GET  /var/namespace/:namespace        - 列出命名空间变量 (adapter 第104/224行)
+//   GET  /vars                            - 变量统计
+//   POST /trigger                         - 触发消息注入
 {
     const xbTestRouter = express.Router();
 
-    // 健康检查
+    // ===== 变量存储（服务进程级内存，重启后清空）=====
+    // key -> { value: any, updatedAt: number }
+    const xbVarStore = new Map();
+
+    // ===== 1. 健康检查端点 - 插件启动时调用 =====
+    xbTestRouter.get('/health', (req, res) => {
+        res.json({
+            status: 'ok',
+            message: 'xb-bridge-test 已就绪 (内嵌于 ST server-main)',
+            timestamp: new Date().toISOString(),
+            varCount: xbVarStore.size,
+        });
+    });
+
+    xbTestRouter.get('/ping', (req, res) => {
+        res.json({
+            status: 'ok',
+            message: 'pong',
+            serverTime: new Date().toISOString(),
+            varCount: xbVarStore.size,
+        });
+    });
+
+    // ===== 2. AI API 代理端点 - 解决浏览器 CORS 限制 =====
     xbTestRouter.get('/ai/proxy/health', (req, res) => {
         res.json({
             status: 'ok',
@@ -259,7 +293,6 @@ app.use('/api/users', usersPublicRouter);
         });
     });
 
-    // AI API 代理（核心路由）
     xbTestRouter.post('/ai/proxy', async (req, res) => {
         try {
             const { baseUrl, apiKey, model, messages, max_tokens, temperature, stream } = req.body ?? {};
@@ -271,7 +304,7 @@ app.use('/api/users', usersPublicRouter);
                 });
             }
 
-            // 智能拼接 URL
+            // 智能拼接 URL - 兼容多种 baseUrl 格式
             let url = baseUrl.replace(/\/$/, '');
             const hasV1 = /\/v1$/i.test(url);
             url = hasV1 ? url + '/chat/completions' : url + '/v1/chat/completions';
@@ -316,53 +349,87 @@ app.use('/api/users', usersPublicRouter);
         }
     });
 
-    // PluginBridge 兼容路由：变量读写（替代端口 3001 的内存存储）
-    const xbVarStore = new Map();
-
-    xbTestRouter.get('/ping', async (req, res) => {
-        res.json({
-            status: 'ok',
-            message: 'xb-bridge-test 路由运行中（内嵌模式，无需端口 3001）',
-            serverTime: new Date().toISOString(),
-            varCount: xbVarStore.size,
-        });
-    });
-
-    xbTestRouter.get('/vars', async (req, res) => {
-        res.json({
-            status: 'ok',
-            source: 'embedded:xb-bridge-test',
-            count: xbVarStore.size,
-        });
-    });
-
-    xbTestRouter.get('/var/:key', async (req, res) => {
+    // ===== 3. 变量读写端点 - 兼容 PluginBridge 协议 =====
+    // 读取变量 - 注意: 插件 adapter.read() 第157行期望 { data: { value: ... } }
+    xbTestRouter.get('/var/:key', (req, res) => {
         try {
             const key = req.params.key;
             const entry = xbVarStore.get(key);
             if (entry === undefined) {
-                return res.status(404).json({ status: 'error', message: '变量不存在: ' + key, key: key });
+                return res.status(404).json({
+                    status: 'error',
+                    key: key,
+                    message: '变量不存在: ' + key,
+                    data: { value: null },
+                });
             }
-            res.json({ status: 'ok', key: key, value: entry.value, updatedAt: entry.updatedAt });
+            res.json({
+                status: 'ok',
+                key: key,
+                data: { value: entry.value },
+                updatedAt: entry.updatedAt,
+            });
         } catch (e) {
             res.status(500).json({ status: 'error', message: e.message });
         }
     });
 
-    xbTestRouter.post('/var/:key', async (req, res) => {
+    // 写入变量 - 兼容 adapter.write() 第177行 和 data-store sendBeacon 第76行
+    xbTestRouter.post('/var/:key', (req, res) => {
         try {
             const key = req.params.key;
             const body = req.body || {};
-            const value = body.value !== undefined ? body.value : body;
+            const value = body.value !== undefined ? body.value : (typeof body === 'string' ? body : JSON.stringify(body));
             const entry = { value: value, updatedAt: Date.now() };
             xbVarStore.set(key, entry);
-            res.json({ status: 'ok', key: key, success: true, updatedAt: entry.updatedAt });
+            res.json({
+                status: 'ok',
+                key: key,
+                success: true,
+                data: { value: value },
+                updatedAt: entry.updatedAt,
+            });
         } catch (e) {
             res.status(500).json({ status: 'error', message: e.message });
         }
     });
 
-    xbTestRouter.post('/trigger', async (req, res) => {
+    // 列出命名空间下所有变量 - 兼容 adapter.list() 第224行
+    xbTestRouter.get('/var/namespace/:namespace', (req, res) => {
+        try {
+            const namespace = req.params.namespace;
+            const prefix = namespace + '.';
+            const values = {};
+
+            for (const [key, entry] of xbVarStore.entries()) {
+                if (key.startsWith(prefix) || key === namespace) {
+                    values[key] = entry.value;
+                }
+            }
+
+            res.json({
+                status: 'ok',
+                namespace: namespace,
+                values: values,
+                count: Object.keys(values).length,
+            });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    // 变量统计端点
+    xbTestRouter.get('/vars', (req, res) => {
+        res.json({
+            status: 'ok',
+            source: 'embedded:xb-bridge-test',
+            count: xbVarStore.size,
+            keys: Array.from(xbVarStore.keys()),
+        });
+    });
+
+    // 触发端点 - 用于外部消息注入
+    xbTestRouter.post('/trigger', (req, res) => {
         try {
             const { value } = req.body || {};
             const key = 'xb.phone.pendingMsg';
