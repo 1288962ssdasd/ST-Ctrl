@@ -163,6 +163,182 @@ app.use(cookieSession({
 
 app.use(setUserDataMiddleware);
 
+// ==================== 移动端插件桥接路由（必须在 CSRF/登录中间件之前注册）====================
+// 插件的 SillyTavernAdapter 通过 fetch('/api/plugins/xb-bridge-test/*') 调用后端
+// 这些请求不带 CSRF token，也不需要登录，必须在所有认证/安全中间件之前注册
+{
+    const xbRouter = express.Router();
+
+    // 进程级内存变量存储：key -> { value: any, updatedAt: number }
+    const xbVarStore = new Map();
+
+    // 1. 健康检查 - 插件启动时立即调用
+    xbRouter.get('/health', (req, res) => {
+        res.json({
+            status: 'ok',
+            message: 'xb-bridge-test 已就绪',
+            timestamp: new Date().toISOString(),
+            varCount: xbVarStore.size,
+        });
+    });
+
+    xbRouter.get('/ping', (req, res) => {
+        res.json({
+            status: 'ok',
+            message: 'pong',
+            serverTime: new Date().toISOString(),
+            varCount: xbVarStore.size,
+        });
+    });
+
+    // 2. AI API 代理 - 解决浏览器 CORS 问题
+    xbRouter.get('/ai/proxy/health', (req, res) => {
+        res.json({ status: 'ok', message: 'AI Proxy 路由就绪', timestamp: new Date().toISOString() });
+    });
+
+    xbRouter.post('/ai/proxy', async (req, res) => {
+        try {
+            const { baseUrl, apiKey, model, messages, max_tokens, temperature, stream } = req.body ?? {};
+
+            if (!baseUrl || !apiKey) {
+                return res.status(400).json({
+                    error: '缺少必要参数',
+                    message: 'baseUrl 和 apiKey 是必需的',
+                });
+            }
+
+            let url = baseUrl.replace(/\/$/, '');
+            const hasV1 = /\/v1$/i.test(url);
+            url = hasV1 ? url + '/chat/completions' : url + '/v1/chat/completions';
+
+            console.log('[AI Proxy] 代理请求到:', url.substring(0, 80));
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + apiKey,
+                },
+                body: JSON.stringify({
+                    model: model || 'gpt-3.5-turbo',
+                    messages: messages || [],
+                    max_tokens: max_tokens || 500,
+                    temperature: temperature ?? 0.7,
+                    stream: stream || false,
+                }),
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('[AI Proxy] API 错误', response.status, errorText.substring(0, 200));
+                return res.status(response.status).json({
+                    error: 'API 错误 ' + response.status,
+                    detail: errorText,
+                });
+            }
+
+            const data = await response.json();
+            res.json(data);
+        } catch (e) {
+            console.error('[AI Proxy] 代理请求失败:', e && e.message);
+            res.status(500).json({ error: '代理请求失败', message: e && e.message });
+        }
+    });
+
+    // 3. 变量读写 - 兼容 PluginBridge 协议
+    // 读取变量：返回 { data: { value: ... } } 供 adapter.read() 的第157行解析
+    xbRouter.get('/var/:key', (req, res) => {
+        try {
+            const key = req.params.key;
+            const entry = xbVarStore.get(key);
+            if (entry === undefined) {
+                return res.status(404).json({
+                    status: 'error',
+                    key: key,
+                    message: '变量不存在: ' + key,
+                    data: { value: null },
+                });
+            }
+            res.json({
+                status: 'ok',
+                key: key,
+                data: { value: entry.value },
+                updatedAt: entry.updatedAt,
+            });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    // 写入变量：兼容 adapter.write() 第177行 和 DataStore 的 sendBeacon（第76行）
+    xbRouter.post('/var/:key', (req, res) => {
+        try {
+            const key = req.params.key;
+            const body = req.body || {};
+            const value = body.value !== undefined ? body.value : (typeof body === 'string' ? body : JSON.stringify(body));
+            const entry = { value: value, updatedAt: Date.now() };
+            xbVarStore.set(key, entry);
+            res.json({
+                status: 'ok',
+                key: key,
+                success: true,
+                data: { value: value },
+                updatedAt: entry.updatedAt,
+            });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    // 列出命名空间下所有变量：返回 { values: { key: value, ... } }
+    xbRouter.get('/var/namespace/:namespace', (req, res) => {
+        try {
+            const namespace = req.params.namespace;
+            const prefix = namespace + '.';
+            const values = {};
+
+            for (const [key, entry] of xbVarStore.entries()) {
+                if (key.startsWith(prefix) || key === namespace) {
+                    values[key] = entry.value;
+                }
+            }
+
+            res.json({
+                status: 'ok',
+                namespace: namespace,
+                values: values,
+                count: Object.keys(values).length,
+            });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    xbRouter.get('/vars', (req, res) => {
+        res.json({
+            status: 'ok',
+            source: 'embedded:xb-bridge-test',
+            count: xbVarStore.size,
+            keys: Array.from(xbVarStore.keys()),
+        });
+    });
+
+    // 触发端点：用于外部消息注入
+    xbRouter.post('/trigger', (req, res) => {
+        try {
+            const { value } = req.body || {};
+            const key = 'xb.phone.pendingMsg';
+            xbVarStore.set(key, { value: value, updatedAt: Date.now() });
+            res.json({ status: 'ok', message: '变量已写入，key=' + key, storedAt: Date.now() });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    app.use('/api/plugins/xb-bridge-test', xbRouter);
+    console.log('[server-main] 移动端插件桥接路由已注册 (/api/plugins/xb-bridge-test/*)');
+}
+
 // CSRF Protection //
 if (!cliArgs.disableCsrf) {
     const csrfSyncProtection = csrfSync({
@@ -243,210 +419,6 @@ app.use(express.static(path.join(serverDirectory, 'public'), {}));
 
 // Public API
 app.use('/api/users', usersPublicRouter);
-
-// ==================== AI API 代理路由（公开访问，解决前端 CORS 问题）====================
-// 注册在 requireLoginMiddleware 之前，使移动端插件可在登录前调用
-// 插件 AIService 通过 /api/plugins/xb-bridge-test/ai/proxy 访问，转发到真实的 LLM API
-//
-// 完整端点清单（对应 SillyTavernAdapter / DataStore 的请求）：
-//   GET  /health                          - 启动时健康检查 (adapter 第50行)
-//   GET  /ping                            - 健康检查 (备用)
-//   POST /ai/proxy                        - AI API 代理 (AIService 第86行)
-//   GET  /ai/proxy/health                 - AI 代理健康检查
-//   GET  /var/:key                        - 读取变量 (adapter 第150行)
-//   POST /var/:key                        - 写入变量 (adapter 第177行, data-store 第76行)
-//   GET  /var/namespace/:namespace        - 列出命名空间变量 (adapter 第104/224行)
-//   GET  /vars                            - 变量统计
-//   POST /trigger                         - 触发消息注入
-{
-    const xbTestRouter = express.Router();
-
-    // ===== 变量存储（服务进程级内存，重启后清空）=====
-    // key -> { value: any, updatedAt: number }
-    const xbVarStore = new Map();
-
-    // ===== 1. 健康检查端点 - 插件启动时调用 =====
-    xbTestRouter.get('/health', (req, res) => {
-        res.json({
-            status: 'ok',
-            message: 'xb-bridge-test 已就绪 (内嵌于 ST server-main)',
-            timestamp: new Date().toISOString(),
-            varCount: xbVarStore.size,
-        });
-    });
-
-    xbTestRouter.get('/ping', (req, res) => {
-        res.json({
-            status: 'ok',
-            message: 'pong',
-            serverTime: new Date().toISOString(),
-            varCount: xbVarStore.size,
-        });
-    });
-
-    // ===== 2. AI API 代理端点 - 解决浏览器 CORS 限制 =====
-    xbTestRouter.get('/ai/proxy/health', (req, res) => {
-        res.json({
-            status: 'ok',
-            message: 'AI Proxy 路由就绪',
-            timestamp: new Date().toISOString(),
-        });
-    });
-
-    xbTestRouter.post('/ai/proxy', async (req, res) => {
-        try {
-            const { baseUrl, apiKey, model, messages, max_tokens, temperature, stream } = req.body ?? {};
-
-            if (!baseUrl || !apiKey) {
-                return res.status(400).json({
-                    error: '缺少必要参数',
-                    message: 'baseUrl 和 apiKey 是必需的',
-                });
-            }
-
-            // 智能拼接 URL - 兼容多种 baseUrl 格式
-            let url = baseUrl.replace(/\/$/, '');
-            const hasV1 = /\/v1$/i.test(url);
-            url = hasV1 ? url + '/chat/completions' : url + '/v1/chat/completions';
-
-            console.log('[AI Proxy] 代理请求到:', url.substring(0, 80));
-
-            const fetchOptions = {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + apiKey,
-                },
-                body: JSON.stringify({
-                    model: model || 'gpt-3.5-turbo',
-                    messages: messages || [],
-                    max_tokens: max_tokens || 500,
-                    temperature: temperature ?? 0.7,
-                    stream: stream || false,
-                }),
-            };
-
-            const response = await fetch(url, fetchOptions);
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                console.error('[AI Proxy] API 错误', response.status, errorText.substring(0, 200));
-                return res.status(response.status).json({
-                    error: 'API 错误 ' + response.status,
-                    detail: errorText,
-                });
-            }
-
-            const data = await response.json();
-            res.json(data);
-
-        } catch (e) {
-            console.error('[AI Proxy] 代理请求失败:', e && e.message);
-            res.status(500).json({
-                error: '代理请求失败',
-                message: e && e.message,
-            });
-        }
-    });
-
-    // ===== 3. 变量读写端点 - 兼容 PluginBridge 协议 =====
-    // 读取变量 - 注意: 插件 adapter.read() 第157行期望 { data: { value: ... } }
-    xbTestRouter.get('/var/:key', (req, res) => {
-        try {
-            const key = req.params.key;
-            const entry = xbVarStore.get(key);
-            if (entry === undefined) {
-                return res.status(404).json({
-                    status: 'error',
-                    key: key,
-                    message: '变量不存在: ' + key,
-                    data: { value: null },
-                });
-            }
-            res.json({
-                status: 'ok',
-                key: key,
-                data: { value: entry.value },
-                updatedAt: entry.updatedAt,
-            });
-        } catch (e) {
-            res.status(500).json({ status: 'error', message: e.message });
-        }
-    });
-
-    // 写入变量 - 兼容 adapter.write() 第177行 和 data-store sendBeacon 第76行
-    xbTestRouter.post('/var/:key', (req, res) => {
-        try {
-            const key = req.params.key;
-            const body = req.body || {};
-            const value = body.value !== undefined ? body.value : (typeof body === 'string' ? body : JSON.stringify(body));
-            const entry = { value: value, updatedAt: Date.now() };
-            xbVarStore.set(key, entry);
-            res.json({
-                status: 'ok',
-                key: key,
-                success: true,
-                data: { value: value },
-                updatedAt: entry.updatedAt,
-            });
-        } catch (e) {
-            res.status(500).json({ status: 'error', message: e.message });
-        }
-    });
-
-    // 列出命名空间下所有变量 - 兼容 adapter.list() 第224行
-    xbTestRouter.get('/var/namespace/:namespace', (req, res) => {
-        try {
-            const namespace = req.params.namespace;
-            const prefix = namespace + '.';
-            const values = {};
-
-            for (const [key, entry] of xbVarStore.entries()) {
-                if (key.startsWith(prefix) || key === namespace) {
-                    values[key] = entry.value;
-                }
-            }
-
-            res.json({
-                status: 'ok',
-                namespace: namespace,
-                values: values,
-                count: Object.keys(values).length,
-            });
-        } catch (e) {
-            res.status(500).json({ status: 'error', message: e.message });
-        }
-    });
-
-    // 变量统计端点
-    xbTestRouter.get('/vars', (req, res) => {
-        res.json({
-            status: 'ok',
-            source: 'embedded:xb-bridge-test',
-            count: xbVarStore.size,
-            keys: Array.from(xbVarStore.keys()),
-        });
-    });
-
-    // 触发端点 - 用于外部消息注入
-    xbTestRouter.post('/trigger', (req, res) => {
-        try {
-            const { value } = req.body || {};
-            const key = 'xb.phone.pendingMsg';
-            xbVarStore.set(key, { value: value, updatedAt: Date.now() });
-            res.json({
-                status: 'ok',
-                message: '变量已写入，key=' + key,
-                storedAt: Date.now(),
-            });
-        } catch (e) {
-            res.status(500).json({ status: 'error', message: e.message });
-        }
-    });
-
-    app.use('/api/plugins/xb-bridge-test', xbTestRouter);
-    console.log('[server-main] AI Proxy + 变量存储路由已注册 (/api/plugins/xb-bridge-test/*)');
-}
 
 // Everything below this line requires authentication
 app.use(requireLoginMiddleware);
