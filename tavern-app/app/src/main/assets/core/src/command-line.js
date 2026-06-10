@@ -326,18 +326,18 @@ export class CommandLineParser {
             requestProxyBypass: cliArguments.requestProxyBypass ?? getConfigValue('requestProxy.bypass', defaultConfig.requestProxyBypass),
             getIPv4ListenUrl: function () {
                 const isValid = ipRegex.v4({ exact: true }).test(this.listenAddressIPv4);
+                // listen: false 时也使用 listenAddressIPv4（默认为 0.0.0.0）
+                // 这样手机 APP 模式下同一局域网的设备也能访问
+                const bindHost = isValid ? this.listenAddressIPv4 : '0.0.0.0';
                 return new URL(
-                    (this.ssl ? 'https://' : 'http://') +
-                    (this.listen ? (isValid ? this.listenAddressIPv4 : '0.0.0.0') : '127.0.0.1') +
-                    (':' + this.port),
+                    (this.ssl ? 'https://' : 'http://') + bindHost + (':' + this.port),
                 );
             },
             getIPv6ListenUrl: function () {
                 const isValid = ipRegex.v6({ exact: true }).test(this.listenAddressIPv6);
+                const bindHost = isValid ? this.listenAddressIPv6 : '[::]';
                 return new URL(
-                    (this.ssl ? 'https://' : 'http://') +
-                    (this.listen ? (isValid ? this.listenAddressIPv6 : '[::]') : '[::1]') +
-                    (':' + this.port),
+                    (this.ssl ? 'https://' : 'http://') + bindHost + (':' + this.port),
                 );
             },
             getBrowserLaunchHostname: async function ({ useIPv6, useIPv4 }) {
