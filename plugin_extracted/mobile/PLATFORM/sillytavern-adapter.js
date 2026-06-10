@@ -8,32 +8,38 @@
 ;(function () {
   'use strict';
 
+  // 全局扩展设置名（用于 extension_settings 对象）
+  const EXT_ID = 'mobile-phone';
+  // localStorage 兜底键名（当 ST 扩展设置不可用时使用）
+  const LS_FALLBACK_KEY = 'mobile_phone_settings';
+
   class SillyTavernAdapter extends IPlatformAdapter {
     constructor(options = {}) {
       super();
 
-      // [方案 A] 通过 SillyTavern 主服务代理到 PluginBridge
-      // 优点：无论在哪里（家里/外面）都能工作，不需要知道 PluginBridge 的 IP
-      // 路由由 ST 插件 xb-bridge-test 提供
+      // [P2 修复] 使用 ST 标准扩展机制（extension_settings + saveSettingsDebounced）
+      //   替代之前的 HTTP API（/api/plugins/xb-bridge-test/*）。
+      //   RT15548/LittleWhiteBox 等所有标准 ST 扩展都用这个机制。
+      //   优点：
+      //     1. 数据由 ST 写入 settings.json → 持久化到磁盘（进程重启不丢）
+      //     2. 不需要后端路由 → 不依赖 server-main.js 改动
+      //     3. 跨浏览器/APP 一致
+      //   降级链：extension_settings → localStorage → 内存 Map
       this._options = {
-        apiBase: options.apiBase || '/api/plugins/xb-bridge-test',
         varPrefix: options.varPrefix || 'xb',
         cacheEnabled: options.cacheEnabled !== false,
-        // [P1-3] 缓存 TTL 从 500ms 提升到 15 秒，读多写少的场景下大幅减少网络请求
-        // 写入时会主动 invalidate 缓存（见 write() 中的 delete），所以 TTL 只影响"期间无写入"的纯读操作
         cacheTTL: options.cacheTTL || 15000,
         ...options,
       };
 
-      console.log('[SillyTavernAdapter] 使用 ST 插件路由:', this._options.apiBase);
+      console.log('[SillyTavernAdapter] 使用 ST 扩展设置（extension_settings）');
 
-      // 缓存
+      // 内存缓存
       this._cache = new Map();
       this._cacheTimestamps = new Map();
 
       // 变更监听器
       this._changeListeners = new Set();
-      this._pollInterval = null;
 
       // 就绪状态
       this._ready = false;
@@ -47,34 +53,23 @@
     async _init() {
       console.log('[SillyTavernAdapter] 初始化...');
 
-      // 启动时健康检查
-      try {
-        const response = await fetch(`${this._options.apiBase}/health`);
-        if (response.ok) {
-          console.log('[SillyTavernAdapter] ✅ 后端 PluginBridge 就绪');
-        } else {
-          console.warn('[SillyTavernAdapter] ⚠️ 后端响应异常:', response.status);
-        }
-      } catch (e) {
-        console.warn('[SillyTavernAdapter] ⚠️ 无法连接后端 PluginBridge:', e.message);
-      }
-
-      // 等待 SillyTavern 就绪（带超时，超时后降级为独立模式）
+      // 等待 SillyTavern 环境就绪（带超时）
       const stReady = await this._waitForSillyTavern(8000);
-      if (!stReady) {
-        // 降级模式：不依赖 ST 特性，但仍可启动
+
+      if (stReady) {
+        // 确保 extension_settings 中有我们的命名空间
+        if (typeof window.extension_settings !== 'undefined' && window.extension_settings) {
+          if (!window.extension_settings[EXT_ID]) {
+            window.extension_settings[EXT_ID] = {};
+          }
+        }
         this._ready = true;
-        console.log('[SillyTavernAdapter] ST 未就绪，降级为独立模式');
-        return;
+        console.log('[SillyTavernAdapter] ✅ 已就绪（ST 扩展设置机制）');
+      } else {
+        // 降级为独立模式（只用 localStorage）
+        this._ready = true;
+        console.log('[SillyTavernAdapter] ⚠️ ST 未就绪，降级为 localStorage 独立模式');
       }
-
-      // [已禁用] 变量驱动轮询 - 改用事件驱动架构
-      // this._startPolling();
-      console.log('[SillyTavernAdapter] 变量驱动已禁用，使用事件驱动');
-
-      this._ready = true;
-
-      console.log('[SillyTavernAdapter] 就绪');
     }
 
     async _waitForSillyTavern(timeout = 8000) {
@@ -94,47 +89,55 @@
       });
     }
 
-    _startPolling() {
-      // 轮询检测变量变更
-      // 记录上次已知值，发现变化时通知监听器
-      const knownValues = new Map();
+    // ==================== 内部存储访问器（extension_settings → localStorage → 内存） ====================
 
-      const poll = async () => {
+    _getStore() {
+      // 优先使用 ST 的 extension_settings（持久化到 settings.json）
+      if (typeof window.extension_settings !== 'undefined' &&
+          window.extension_settings &&
+          window.extension_settings[EXT_ID]) {
+        return { type: 'extension_settings', data: window.extension_settings[EXT_ID] };
+      }
+
+      // 降级：localStorage（浏览器刷新也能保留）
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          const raw = window.localStorage.getItem(LS_FALLBACK_KEY);
+          const data = raw ? JSON.parse(raw) : {};
+          return { type: 'localStorage', data: data, _needWriteBack: true };
+        }
+      } catch (e) {
+        // localStorage 不可用，继续降级
+      }
+
+      // 最终降级：纯内存（进程重启丢失，聊胜于无）
+      if (!this._memStore) this._memStore = {};
+      return { type: 'memory', data: this._memStore };
+    }
+
+    _saveStore(store) {
+      if (store.type === 'extension_settings') {
+        // ST 标准方式：调用 saveSettingsDebounced()
         try {
-          // 通过 namespace API 获取当前所有变量快照
-          const namespace = this._options.varPrefix;
-          const response = await fetch(`${this._options.apiBase}/var/namespace/${encodeURIComponent(namespace)}`);
-
-          if (!response.ok) return;
-
-          const data = await response.json();
-          const values = data?.values || {};
-
-          // 检测变更
-          for (const [key, value] of Object.entries(values)) {
-            const oldValue = knownValues.get(key);
-            if (oldValue === undefined) {
-              // 新变量，记录但不触发
-              knownValues.set(key, value);
-            } else if (JSON.stringify(oldValue) !== JSON.stringify(value)) {
-              // 变量值发生变化
-              knownValues.set(key, value);
-              this._notifyChange(key, value);
-            }
-          }
-
-          // 清理已删除的变量
-          for (const key of knownValues.keys()) {
-            if (!(key in values)) {
-              knownValues.delete(key);
-            }
+          if (typeof window.saveSettingsDebounced === 'function') {
+            window.saveSettingsDebounced();
+          } else if (typeof window.eventSource !== 'undefined' && window.eventSource) {
+            // 有些版本通过事件触发保存
+            window.eventSource.emit('settings_changed');
           }
         } catch (e) {
-          // 忽略轮询错误，避免刷屏
+          console.warn('[SillyTavernAdapter] ST 保存失败，写入 localStorage:', e);
+          // 兜底：写入 localStorage
+          try {
+            window.localStorage.setItem(LS_FALLBACK_KEY, JSON.stringify(window.extension_settings[EXT_ID]));
+          } catch (e2) { /* 忽略 */ }
         }
-      };
-
-      this._pollInterval = setInterval(poll, 3000); // 每 3 秒轮询一次
+      } else if (store.type === 'localStorage') {
+        try {
+          window.localStorage.setItem(LS_FALLBACK_KEY, JSON.stringify(store.data));
+        } catch (e) { /* 忽略 */ }
+      }
+      // memory 模式无需显式保存
     }
 
     // ==================== IPlatformAdapter 实现 ====================
@@ -149,18 +152,14 @@
       }
 
       try {
-        const response = await fetch(`${this._options.apiBase}/var/${encodeURIComponent(fullKey)}`);
+        const store = this._getStore();
+        const value = store.data[fullKey];
 
-        if (!response.ok) {
-          if (response.status === 404) return null;
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        const value = data?.data?.value ?? null;
+        // 规范：null/undefined 视为未设置
+        if (value === undefined || value === null) return null;
 
         // 更新缓存
-        if (this._options.cacheEnabled && value !== null) {
+        if (this._options.cacheEnabled) {
           this._setCached(fullKey, value);
         }
 
@@ -173,26 +172,24 @@
 
     async write(key, value) {
       const fullKey = this._normalizeKey(key);
-      const strValue = typeof value === 'string' ? value : JSON.stringify(value);
 
       try {
-        const response = await fetch(`${this._options.apiBase}/var/${encodeURIComponent(fullKey)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ value: strValue }),
-        });
+        const store = this._getStore();
+        const oldValue = store.data[fullKey];
 
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
+        // 真正写入存储
+        store.data[fullKey] = value;
+        this._saveStore(store);
 
         // 更新缓存
         if (this._options.cacheEnabled) {
           this._setCached(fullKey, value);
         }
 
-        // 触发变更事件
-        this._notifyChange(fullKey, value);
+        // 触发变更事件（仅在值确实变化时）
+        if (JSON.stringify(oldValue) !== JSON.stringify(value)) {
+          this._notifyChange(fullKey, value);
+        }
 
         return true;
       } catch (e) {
@@ -205,10 +202,10 @@
       const fullKey = this._normalizeKey(key);
 
       try {
-        // 通过写入空值实现删除
-        await this.write(fullKey, '');
+        const store = this._getStore();
+        delete store.data[fullKey];
+        this._saveStore(store);
 
-        // 清除缓存
         this._cache.delete(fullKey);
         this._cacheTimestamps.delete(fullKey);
 
@@ -220,18 +217,17 @@
     }
 
     async list(prefix) {
-      // 通过 PluginBridge 的 namespace API 列出变量
+      const namespace = prefix || this._options.varPrefix;
       try {
-        const namespace = prefix || this._options.varPrefix;
-        const response = await fetch(`${this._options.apiBase}/var/namespace/${encodeURIComponent(namespace)}`);
-
-        if (!response.ok) {
-          if (response.status === 404) return [];
-          throw new Error(`HTTP ${response.status}`);
+        const store = this._getStore();
+        const keys = [];
+        for (const key of Object.keys(store.data)) {
+          if (key === namespace || key.startsWith(namespace + '.') ||
+              key === 'xb.' + namespace || key.startsWith('xb.' + namespace + '.')) {
+            keys.push(key);
+          }
         }
-
-        const data = await response.json();
-        return data?.values ? Object.keys(data.values) : [];
+        return keys;
       } catch (e) {
         console.warn('[SillyTavernAdapter] list() 失败:', e);
         return [];
@@ -241,10 +237,10 @@
     async batchRead(keys) {
       if (!keys || keys.length === 0) return {};
 
-      // 先过滤掉缓存中已有的键
-      const uncachedKeys = [];
       const result = {};
+      const uncachedKeys = [];
 
+      // 先过滤缓存
       if (this._options.cacheEnabled) {
         for (const key of keys) {
           const cached = this._getCached(key);
@@ -258,33 +254,22 @@
         uncachedKeys.push(...keys);
       }
 
-      // 全部命中缓存，直接返回
       if (uncachedKeys.length === 0) return result;
 
-      // 【优化】优先使用后端的批量接口，减少 80% HTTP 往返
+      // 直接从 store 一次性读取（无需网络，毫秒级）
       try {
-        const response = await fetch(`${this._options.apiBase}/vars/batch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keys: uncachedKeys }),
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          const values = data?.values || {};
-
-          for (const key of uncachedKeys) {
-            const value = values[key];
-            if (value !== undefined && value !== null) {
-              result[key] = value;
-              if (this._options.cacheEnabled) this._setCached(key, value);
-            }
+        const store = this._getStore();
+        for (const key of uncachedKeys) {
+          const fullKey = this._normalizeKey(key);
+          const value = store.data[fullKey];
+          if (value !== undefined && value !== null) {
+            result[key] = value;
+            if (this._options.cacheEnabled) this._setCached(fullKey, value);
           }
-          return result;
         }
+        return result;
       } catch (e) {
-        // 批量接口不可用时，降级为逐个读取（不影响功能）
-        console.warn('[SillyTavernAdapter] 批量读取接口不可用，降级为逐个读取');
+        console.warn('[SillyTavernAdapter] batchRead 失败:', e);
       }
 
       // 降级方案：并行读取（Promise.all 比串行快 10 倍）
@@ -301,39 +286,40 @@
       const entries = Object.entries(data);
       if (entries.length === 0) return true;
 
-      // 【优化】优先使用后端批量写入接口
+      // 【P2 修复】直接写入 extension_settings 对象，一次保存
       try {
-        const writes = entries.map(([key, value]) => ({
-          key: this._normalizeKey(key),
-          value: typeof value === 'string' ? value : JSON.stringify(value),
-        }));
+        const store = this._getStore();
+        let hasChange = false;
 
-        const response = await fetch(`${this._options.apiBase}/vars/batch-write`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ writes: writes }),
-        });
+        for (const [key, value] of entries) {
+          const fullKey = this._normalizeKey(key);
+          const oldValue = store.data[fullKey];
 
-        if (response.ok) {
-          // 批量写入成功，更新本地缓存
-          if (this._options.cacheEnabled) {
-            for (const [key, value] of entries) {
-              this._setCached(key, value);
-              this._notifyChange(key, value);
-            }
+          if (JSON.stringify(oldValue) !== JSON.stringify(value)) {
+            store.data[fullKey] = value;
+            hasChange = true;
+
+            // 更新缓存
+            if (this._options.cacheEnabled) this._setCached(fullKey, value);
+
+            // 通知变更
+            this._notifyChange(fullKey, value);
           }
-          return true;
         }
-      } catch (e) {
-        console.warn('[SillyTavernAdapter] 批量写入接口不可用，降级为逐个写入');
-      }
 
-      // 降级方案：并行写入
-      const promises = entries.map(async ([key, value]) => {
-        await this.write(key, value);
-      });
-      await Promise.all(promises);
-      return true;
+        // 一次保存（减少 I/O）
+        if (hasChange) this._saveStore(store);
+
+        return true;
+      } catch (e) {
+        console.warn('[SillyTavernAdapter] batchWrite 失败:', e);
+        // 降级：逐个写入
+        const promises = entries.map(async ([key, value]) => {
+          await this.write(key, value);
+        });
+        await Promise.all(promises);
+        return true;
+      }
     }
 
     onVariableChange(callback) {

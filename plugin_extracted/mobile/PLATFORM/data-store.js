@@ -62,14 +62,13 @@
     _bindUnloadProtection() {
       const self = this;
 
-      // [P0-1] 统一的关闭前持久化逻辑
-      // 优先级：1. 批量写入 → 2. sendBeacon 逐条 → 3. localStorage 兜底
+      // [P2 修复] 统一的关闭前持久化逻辑（不再依赖 HTTP 路由）
+      // 优先级：1. extension_settings 批量写入（同步） → 2. localStorage 保底
       const doFlush = () => {
         // 即使适配器不可用，也必须持久化数据
         if (!self._pendingWrites || self._pendingWrites.size === 0) return;
 
-        // [P0-1] 步骤1：先存 localStorage（保底方案，100% 能成功）
-        //    即使网络请求失败，下次页面加载时能从 localStorage 恢复
+        // 步骤1：localStorage 保底（先存，确保不会丢）
         for (const [fullKey, value] of self._pendingWrites) {
           try {
             localStorage.setItem(self._LS_PREFIX + fullKey,
@@ -77,52 +76,20 @@
           } catch (e) { /* ignore */ }
         }
 
-        // [P0-1] 步骤2：尝试 sendBeacon（优先批量，其次逐条）
-        if (self._adapter) {
+        // 步骤2：通过 Adapter 写入 SillyTavern 标准设置（extension_settings）
+        if (self._adapter && typeof self._adapter.batchWrite === 'function') {
           try {
-            const apiBase = self._adapter._options?.apiBase || '';
-
-            // [P0-1] 优先用批量接口（1条请求 = N条数据，成功率最高）
-            if (typeof self._adapter.batchWrite === 'function' && navigator.sendBeacon) {
-              const batchData = {};
-              for (const [fullKey, value] of self._pendingWrites) {
-                const [domain, ...keyParts] = fullKey.split('.');
-                const key = keyParts.join('.');
-                const storagePath = self.toStoragePath(domain, key);
-                batchData[storagePath] = typeof value === 'string' ? value : JSON.stringify(value);
-              }
-              try {
-                const payload = JSON.stringify({ values: batchData });
-                navigator.sendBeacon(
-                  `${apiBase}/vars/batch-write`,
-                  new Blob([payload], { type: 'application/json' })
-                );
-                self._pendingWrites.clear();
-                return;
-              } catch (e) { /* 降级到逐条 */ }
+            const batchData = {};
+            for (const [fullKey, value] of self._pendingWrites) {
+              batchData[fullKey] = value;
             }
-
-            // 逐条 sendBeacon
-            if (navigator.sendBeacon) {
-              for (const [fullKey, value] of self._pendingWrites) {
-                try {
-                  const [domain, ...keyParts] = fullKey.split('.');
-                  const key = keyParts.join('.');
-                  const storagePath = self.toStoragePath(domain, key);
-                  const payload = JSON.stringify({
-                    value: typeof value === 'string' ? value : JSON.stringify(value)
-                  });
-                  navigator.sendBeacon(
-                    `${apiBase}/var/${encodeURIComponent(storagePath)}`,
-                    new Blob([payload], { type: 'application/json' })
-                  );
-                } catch (e) { /* ignore */ }
-              }
-            }
-          } catch (e) { /* ignore */ }
+            // 同步写入 extension_settings（不需要网络，由 ST 负责持久化）
+            self._adapter.batchWrite(batchData);
+          } catch (e) {
+            console.warn('[DataStore] 批量写入 Adapter 失败，但 localStorage 已保存:', e);
+          }
         }
 
-        // 清空待写入队列（localStorage 已经存了兜底数据）
         self._pendingWrites.clear();
       };
 
