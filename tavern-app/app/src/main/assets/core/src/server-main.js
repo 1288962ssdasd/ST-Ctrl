@@ -244,6 +244,143 @@ app.use(express.static(path.join(serverDirectory, 'public'), {}));
 // Public API
 app.use('/api/users', usersPublicRouter);
 
+// ==================== AI API 代理路由（公开访问，解决前端 CORS 问题）====================
+// 注册在 requireLoginMiddleware 之前，使移动端插件可在登录前调用
+// 插件 AIService 通过 /api/plugins/xb-bridge-test/ai/proxy 访问，转发到真实的 LLM API
+{
+    const xbTestRouter = express.Router();
+
+    // 健康检查
+    xbTestRouter.get('/ai/proxy/health', (req, res) => {
+        res.json({
+            status: 'ok',
+            message: 'AI Proxy 路由就绪',
+            timestamp: new Date().toISOString(),
+        });
+    });
+
+    // AI API 代理（核心路由）
+    xbTestRouter.post('/ai/proxy', async (req, res) => {
+        try {
+            const { baseUrl, apiKey, model, messages, max_tokens, temperature, stream } = req.body ?? {};
+
+            if (!baseUrl || !apiKey) {
+                return res.status(400).json({
+                    error: '缺少必要参数',
+                    message: 'baseUrl 和 apiKey 是必需的',
+                });
+            }
+
+            // 智能拼接 URL
+            let url = baseUrl.replace(/\/$/, '');
+            const hasV1 = /\/v1$/i.test(url);
+            url = hasV1 ? url + '/chat/completions' : url + '/v1/chat/completions';
+
+            console.log('[AI Proxy] 代理请求到:', url.substring(0, 80));
+
+            const fetchOptions = {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + apiKey,
+                },
+                body: JSON.stringify({
+                    model: model || 'gpt-3.5-turbo',
+                    messages: messages || [],
+                    max_tokens: max_tokens || 500,
+                    temperature: temperature ?? 0.7,
+                    stream: stream || false,
+                }),
+            };
+
+            const response = await fetch(url, fetchOptions);
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('[AI Proxy] API 错误', response.status, errorText.substring(0, 200));
+                return res.status(response.status).json({
+                    error: 'API 错误 ' + response.status,
+                    detail: errorText,
+                });
+            }
+
+            const data = await response.json();
+            res.json(data);
+
+        } catch (e) {
+            console.error('[AI Proxy] 代理请求失败:', e && e.message);
+            res.status(500).json({
+                error: '代理请求失败',
+                message: e && e.message,
+            });
+        }
+    });
+
+    // PluginBridge 兼容路由：变量读写（替代端口 3001 的内存存储）
+    const xbVarStore = new Map();
+
+    xbTestRouter.get('/ping', async (req, res) => {
+        res.json({
+            status: 'ok',
+            message: 'xb-bridge-test 路由运行中（内嵌模式，无需端口 3001）',
+            serverTime: new Date().toISOString(),
+            varCount: xbVarStore.size,
+        });
+    });
+
+    xbTestRouter.get('/vars', async (req, res) => {
+        res.json({
+            status: 'ok',
+            source: 'embedded:xb-bridge-test',
+            count: xbVarStore.size,
+        });
+    });
+
+    xbTestRouter.get('/var/:key', async (req, res) => {
+        try {
+            const key = req.params.key;
+            const entry = xbVarStore.get(key);
+            if (entry === undefined) {
+                return res.status(404).json({ status: 'error', message: '变量不存在: ' + key, key: key });
+            }
+            res.json({ status: 'ok', key: key, value: entry.value, updatedAt: entry.updatedAt });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    xbTestRouter.post('/var/:key', async (req, res) => {
+        try {
+            const key = req.params.key;
+            const body = req.body || {};
+            const value = body.value !== undefined ? body.value : body;
+            const entry = { value: value, updatedAt: Date.now() };
+            xbVarStore.set(key, entry);
+            res.json({ status: 'ok', key: key, success: true, updatedAt: entry.updatedAt });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    xbTestRouter.post('/trigger', async (req, res) => {
+        try {
+            const { value } = req.body || {};
+            const key = 'xb.phone.pendingMsg';
+            xbVarStore.set(key, { value: value, updatedAt: Date.now() });
+            res.json({
+                status: 'ok',
+                message: '变量已写入，key=' + key,
+                storedAt: Date.now(),
+            });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    app.use('/api/plugins/xb-bridge-test', xbTestRouter);
+    console.log('[server-main] AI Proxy + 变量存储路由已注册 (/api/plugins/xb-bridge-test/*)');
+}
+
 // Everything below this line requires authentication
 app.use(requireLoginMiddleware);
 app.post('/api/ping', (request, response) => {
