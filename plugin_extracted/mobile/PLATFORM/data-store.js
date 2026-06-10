@@ -167,46 +167,48 @@
       if (!schema) return;
 
       const keys = Object.keys(schema);
-      let loaded = 0;
 
-      for (const key of keys) {
-        const fullKey = `${domain}.${key}`;
-        
-        // 跳过已缓存的数据
-        if (this._cache.has(fullKey)) continue;
-
+      // [优化] 如果有适配器支持 batchRead，优先使用批量接口（一次读取所有）
+      if (this._adapter && typeof this._adapter.batchRead === 'function') {
         try {
-          const storagePath = this.toStoragePath(domain, key);
-          const value = await this._adapter.read(storagePath);
+          const fullKeys = keys.map((k) => `${domain}.${k}`);
+          // 过滤掉已缓存的项
+          const missingKeys = fullKeys.filter((fk) => !this._cache.has(fk));
+          if (missingKeys.length === 0) return;
 
-          if (value !== null && value !== undefined) {
-            // 解析 JSON
-            let parsed = value;
-            if (typeof value === 'string') {
-              try {
-                parsed = JSON.parse(value);
-              } catch (e) {
-                // 保持字符串
-              }
+          const values = await this._adapter.batchRead(missingKeys);
+          let loaded = 0;
+
+          for (const key of keys) {
+            const fullKey = `${domain}.${key}`;
+            const value = values[fullKey];
+            if (value !== null && value !== undefined) {
+              this._setCache(fullKey, value, false);
+              loaded++;
             }
+          }
 
-            // 存入缓存
-            this._setCache(fullKey, parsed, false);
-            loaded++;
-          }
+          console.log('[DataStore] 领域数据恢复完成（批量）:', domain, '加载', loaded, '项');
+          return;
         } catch (e) {
-          // 尝试从 localStorage 恢复
-          const localValue = this._loadFromLocalStorage(fullKey);
-          if (localValue !== null) {
-            this._setCache(fullKey, localValue, false);
-            loaded++;
-            console.log('[DataStore] 从 localStorage 恢复:', fullKey);
-          }
+          // 降级到逐个读取
+          console.warn('[DataStore] 批量读取失败，降级为逐个读取:', domain);
         }
       }
 
-      if (loaded > 0) {
-        console.log('[DataStore] 领域数据恢复完成:', domain, '加载', loaded, '项');
+      // 降级方案：逐个读取
+      for (const key of keys) {
+        const fullKey = `${domain}.${key}`;
+        if (this._cache.has(fullKey)) continue;
+        try {
+          const storagePath = this.toStoragePath(domain, key);
+          const value = await this._adapter?.read(storagePath);
+          if (value !== null && value !== undefined) {
+            this._setCache(fullKey, value, false);
+          }
+        } catch (e) {
+          // 静默忽略
+        }
       }
     }
 
@@ -643,30 +645,57 @@
       const writes = new Map(this._pendingWrites);
       this._pendingWrites.clear();
 
-      // [v3.3.2-fix] 改为 debug 级别，减少日志噪音；可通过 ui-feedback 面板过滤
       console.debug('[DataStore] 刷新写入:', writes.size, '项');
 
-      for (const [fullKey, value] of writes) {
+      // [优化] 优先使用批量写入接口：1次 HTTP 取代 N次
+      let batchSuccess = false;
+      if (writes.size >= 2 && typeof this._adapter.batchWrite === 'function') {
         try {
-          const [domain, ...keyParts] = fullKey.split('.');
-          const key = keyParts.join('.');
-          const storagePath = this.toStoragePath(domain, key);
-
-          await this._adapter.write(storagePath, value);
-
-          // 更新缓存状态
-          const cached = this._cache.get(fullKey);
-          if (cached) {
-            cached.dirty = false;
+          const batchData = {};
+          for (const [fullKey, value] of writes) {
+            const [domain, ...keyParts] = fullKey.split('.');
+            const key = keyParts.join('.');
+            const storagePath = this.toStoragePath(domain, key);
+            batchData[storagePath] = value;
           }
+
+          await this._adapter.batchWrite(batchData);
+
+          // 标记所有缓存为不脏
+          for (const fullKey of writes.keys()) {
+            const cached = this._cache.get(fullKey);
+            if (cached) cached.dirty = false;
+          }
+          batchSuccess = true;
         } catch (e) {
-          console.error('[DataStore] 写入失败:', fullKey, e);
-          // 降级到 localStorage
-          this._saveToLocalStorage(fullKey, value);
-          // 更新缓存状态
-          const cached = this._cache.get(fullKey);
-          if (cached) {
-            cached.dirty = false;
+          console.warn('[DataStore] 批量写入失败，降级为逐个写入:', e.message);
+        }
+      }
+
+      // 降级：逐个写入（也支持单项或批量接口不可用时）
+      if (!batchSuccess) {
+        for (const [fullKey, value] of writes) {
+          try {
+            const [domain, ...keyParts] = fullKey.split('.');
+            const key = keyParts.join('.');
+            const storagePath = this.toStoragePath(domain, key);
+
+            await this._adapter.write(storagePath, value);
+
+            // 更新缓存状态
+            const cached = this._cache.get(fullKey);
+            if (cached) {
+              cached.dirty = false;
+            }
+          } catch (e) {
+            console.error('[DataStore] 写入失败:', fullKey, e);
+            // 降级到 localStorage
+            this._saveToLocalStorage(fullKey, value);
+            // 更新缓存状态
+            const cached = this._cache.get(fullKey);
+            if (cached) {
+              cached.dirty = false;
+            }
           }
         }
       }

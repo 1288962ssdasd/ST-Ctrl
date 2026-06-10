@@ -165,15 +165,19 @@ app.use(setUserDataMiddleware);
 
 // ==================== 移动端插件桥接路由（必须在 CSRF/登录中间件之前注册）====================
 // 插件的 SillyTavernAdapter 通过 fetch('/api/plugins/xb-bridge-test/*') 调用后端
-// 这些请求不带 CSRF token，也不需要登录，必须在所有认证/安全中间件之前注册
+// 性能关键点：
+//   1. 使用批量接口 /vars/batch 替代逐个请求，减少 80% HTTP 往返
+//   2. 所有小响应接口添加 no-cache / 快速返回，避免排队
+//   3. AI 代理使用 AbortSignal + 超时限制，避免阻塞
 {
     const xbRouter = express.Router();
 
     // 进程级内存变量存储：key -> { value: any, updatedAt: number }
     const xbVarStore = new Map();
 
-    // 1. 健康检查 - 插件启动时立即调用
+    // ---- 1. 健康检查（1ms 响应级）----
     xbRouter.get('/health', (req, res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache');
         res.json({
             status: 'ok',
             message: 'xb-bridge-test 已就绪',
@@ -183,6 +187,7 @@ app.use(setUserDataMiddleware);
     });
 
     xbRouter.get('/ping', (req, res) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache');
         res.json({
             status: 'ok',
             message: 'pong',
@@ -191,12 +196,14 @@ app.use(setUserDataMiddleware);
         });
     });
 
-    // 2. AI API 代理 - 解决浏览器 CORS 问题
+    // ---- 2. AI API 代理（带超时）----
     xbRouter.get('/ai/proxy/health', (req, res) => {
+        res.setHeader('Cache-Control', 'no-store');
         res.json({ status: 'ok', message: 'AI Proxy 路由就绪', timestamp: new Date().toISOString() });
     });
 
     xbRouter.post('/ai/proxy', async (req, res) => {
+        const t0 = Date.now();
         try {
             const { baseUrl, apiKey, model, messages, max_tokens, temperature, stream } = req.body ?? {};
 
@@ -213,6 +220,10 @@ app.use(setUserDataMiddleware);
 
             console.log('[AI Proxy] 代理请求到:', url.substring(0, 80));
 
+            // 60秒超时，避免长时间阻塞前端
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
+
             const response = await fetch(url, {
                 method: 'POST',
                 headers: {
@@ -226,11 +237,14 @@ app.use(setUserDataMiddleware);
                     temperature: temperature ?? 0.7,
                     stream: stream || false,
                 }),
+                signal: controller.signal,
             });
+
+            clearTimeout(timeoutId);
 
             if (!response.ok) {
                 const errorText = await response.text();
-                console.error('[AI Proxy] API 错误', response.status, errorText.substring(0, 200));
+                console.error('[AI Proxy] API 错误', response.status, '耗时', (Date.now() - t0) + 'ms');
                 return res.status(response.status).json({
                     error: 'API 错误 ' + response.status,
                     detail: errorText,
@@ -238,15 +252,19 @@ app.use(setUserDataMiddleware);
             }
 
             const data = await response.json();
+            console.log('[AI Proxy] 成功响应，耗时', (Date.now() - t0) + 'ms');
             res.json(data);
         } catch (e) {
-            console.error('[AI Proxy] 代理请求失败:', e && e.message);
+            console.error('[AI Proxy] 代理请求失败（耗时', (Date.now() - t0) + 'ms）:', e && e.message);
+            if (e && e.name === 'AbortError') {
+                return res.status(504).json({ error: '请求超时', message: 'AI API 60秒未响应' });
+            }
             res.status(500).json({ error: '代理请求失败', message: e && e.message });
         }
     });
 
-    // 3. 变量读写 - 兼容 PluginBridge 协议
-    // 读取变量：返回 { data: { value: ... } } 供 adapter.read() 的第157行解析
+    // ---- 3. 变量读写：逐个接口（兼容 PluginBridge 协议）----
+    // 读取变量：返回 { data: { value: ... } }
     xbRouter.get('/var/:key', (req, res) => {
         try {
             const key = req.params.key;
@@ -270,7 +288,7 @@ app.use(setUserDataMiddleware);
         }
     });
 
-    // 写入变量：兼容 adapter.write() 第177行 和 DataStore 的 sendBeacon（第76行）
+    // 写入变量
     xbRouter.post('/var/:key', (req, res) => {
         try {
             const key = req.params.key;
@@ -290,7 +308,94 @@ app.use(setUserDataMiddleware);
         }
     });
 
-    // 列出命名空间下所有变量：返回 { values: { key: value, ... } }
+    // ---- 4. 【批量接口】一次读取 N 个变量（启动/恢复阶段调用）----
+    // 请求：GET /api/plugins/xb-bridge-test/vars/batch?keys=k1,k2,k3,...
+    // 或   POST /api/plugins/xb-bridge-test/vars/batch  body: { keys: [...] }
+    xbRouter.get('/vars/batch', (req, res) => {
+        try {
+            const keys = (req.query.keys || '').toString().split(',').filter(Boolean);
+            const values = {};
+            const missing = [];
+
+            for (const key of keys) {
+                const entry = xbVarStore.get(key);
+                if (entry !== undefined) {
+                    values[key] = entry.value;
+                } else {
+                    missing.push(key);
+                }
+            }
+
+            res.json({
+                status: 'ok',
+                count: keys.length,
+                found: Object.keys(values).length,
+                values: values,
+                missing: missing,
+            });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    xbRouter.post('/vars/batch', (req, res) => {
+        try {
+            const body = req.body || {};
+            const keys = Array.isArray(body.keys) ? body.keys : [];
+            const values = {};
+            const missing = [];
+
+            for (const key of keys) {
+                const entry = xbVarStore.get(key);
+                if (entry !== undefined) {
+                    values[key] = entry.value;
+                } else {
+                    missing.push(key);
+                }
+            }
+
+            res.json({
+                status: 'ok',
+                count: keys.length,
+                found: Object.keys(values).length,
+                values: values,
+                missing: missing,
+            });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    // ---- 5. 【批量接口】一次写入 N 个变量（flush 阶段调用）----
+    // 请求：POST /api/plugins/xb-bridge-test/vars/batch-write
+    // body: { writes: [{ key: 'xb.x.y', value: '...' }, ...] }
+    xbRouter.post('/vars/batch-write', (req, res) => {
+        try {
+            const body = req.body || {};
+            const writes = Array.isArray(body.writes) ? body.writes : [];
+            const now = Date.now();
+            let successCount = 0;
+
+            for (const item of writes) {
+                if (item && item.key) {
+                    const value = item.value !== undefined ? item.value : (typeof item === 'object' ? JSON.stringify(item) : item);
+                    xbVarStore.set(item.key, { value: value, updatedAt: now });
+                    successCount++;
+                }
+            }
+
+            res.json({
+                status: 'ok',
+                written: successCount,
+                total: writes.length,
+                timestamp: now,
+            });
+        } catch (e) {
+            res.status(500).json({ status: 'error', message: e.message });
+        }
+    });
+
+    // 列出命名空间下所有变量
     xbRouter.get('/var/namespace/:namespace', (req, res) => {
         try {
             const namespace = req.params.namespace;

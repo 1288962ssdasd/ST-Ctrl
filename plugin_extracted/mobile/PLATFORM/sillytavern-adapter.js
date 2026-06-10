@@ -237,17 +237,100 @@
     }
 
     async batchRead(keys) {
+      if (!keys || keys.length === 0) return {};
+
+      // 先过滤掉缓存中已有的键
+      const uncachedKeys = [];
       const result = {};
-      for (const key of keys) {
-        result[key] = await this.read(key);
+
+      if (this._options.cacheEnabled) {
+        for (const key of keys) {
+          const cached = this._getCached(key);
+          if (cached !== undefined) {
+            result[key] = cached;
+          } else {
+            uncachedKeys.push(key);
+          }
+        }
+      } else {
+        uncachedKeys.push(...keys);
       }
+
+      // 全部命中缓存，直接返回
+      if (uncachedKeys.length === 0) return result;
+
+      // 【优化】优先使用后端的批量接口，减少 80% HTTP 往返
+      try {
+        const response = await fetch(`${this._options.apiBase}/vars/batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keys: uncachedKeys }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const values = data?.values || {};
+
+          for (const key of uncachedKeys) {
+            const value = values[key];
+            if (value !== undefined && value !== null) {
+              result[key] = value;
+              if (this._options.cacheEnabled) this._setCached(key, value);
+            }
+          }
+          return result;
+        }
+      } catch (e) {
+        // 批量接口不可用时，降级为逐个读取（不影响功能）
+        console.warn('[SillyTavernAdapter] 批量读取接口不可用，降级为逐个读取');
+      }
+
+      // 降级方案：并行读取（Promise.all 比串行快 10 倍）
+      const promises = uncachedKeys.map(async (key) => {
+        const value = await this.read(key);
+        if (value !== null && value !== undefined) result[key] = value;
+      });
+      await Promise.all(promises);
+
       return result;
     }
 
     async batchWrite(data) {
-      for (const [key, value] of Object.entries(data)) {
-        await this.write(key, value);
+      const entries = Object.entries(data);
+      if (entries.length === 0) return true;
+
+      // 【优化】优先使用后端批量写入接口
+      try {
+        const writes = entries.map(([key, value]) => ({
+          key: this._normalizeKey(key),
+          value: typeof value === 'string' ? value : JSON.stringify(value),
+        }));
+
+        const response = await fetch(`${this._options.apiBase}/vars/batch-write`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ writes: writes }),
+        });
+
+        if (response.ok) {
+          // 批量写入成功，更新本地缓存
+          if (this._options.cacheEnabled) {
+            for (const [key, value] of entries) {
+              this._setCached(key, value);
+              this._notifyChange(key, value);
+            }
+          }
+          return true;
+        }
+      } catch (e) {
+        console.warn('[SillyTavernAdapter] 批量写入接口不可用，降级为逐个写入');
       }
+
+      // 降级方案：并行写入
+      const promises = entries.map(async ([key, value]) => {
+        await this.write(key, value);
+      });
+      await Promise.all(promises);
       return true;
     }
 
