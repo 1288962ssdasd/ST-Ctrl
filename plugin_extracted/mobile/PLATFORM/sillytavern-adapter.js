@@ -19,7 +19,9 @@
         apiBase: options.apiBase || '/api/plugins/xb-bridge-test',
         varPrefix: options.varPrefix || 'xb',
         cacheEnabled: options.cacheEnabled !== false,
-        cacheTTL: options.cacheTTL || 500,
+        // [P1-3] 缓存 TTL 从 500ms 提升到 15 秒，读多写少的场景下大幅减少网络请求
+        // 写入时会主动 invalidate 缓存（见 write() 中的 delete），所以 TTL 只影响"期间无写入"的纯读操作
+        cacheTTL: options.cacheTTL || 15000,
         ...options,
       };
 

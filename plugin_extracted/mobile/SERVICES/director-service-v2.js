@@ -115,14 +115,43 @@
         if (this._platform?.get) {
           var rawWorldSvc = this._platform.get('worldService');
           if (rawWorldSvc) {
-            // [接口适配] WorldService 方法名与 V2 调用不一致，包装适配器
-            // WorldService: getWorld(charId) → V2 期望: get(charId)
-            // WorldService 无 getStage/updateStage → 适配器提供空实现
+            // [P1-4] 接口适配：WorldService 方法名与 V2 调用不一致
+            // 注意：getStage/updateStage 改为通过 SillyTavernAdapter 真正读写变量
+            var platformAdapter = this._platform?.adapter;
+            var directorSvc = this;
+
             this._worldData = {
-              get: function(charId) { return rawWorldSvc.getWorld(charId); },
-              getStage: async function() { return 1; }, // WorldService 不暴露 stage，返回默认值
-              updateStage: async function() { return true; }, // WorldService 不暴露 stage 更新
-              _raw: rawWorldSvc, // 保留原始引用以便调试
+              get: function(charId) {
+                try {
+                  return rawWorldSvc.getWorld(charId);
+                } catch (e) {
+                  console.warn('[DirectorServiceV2] getWorld 失败:', e);
+                  return null;
+                }
+              },
+              // [P1-4] 从 SillyTavernAdapter 读取 stage（1-5 洋葱层级）
+              getStage: async function(charId) {
+                try {
+                  var val = await platformAdapter?.read?.('world.stage.' + (charId || 'default'));
+                  var stage = parseInt(val, 10);
+                  if (!isNaN(stage) && stage >= 1 && stage <= 5) return stage;
+                  return 1;
+                } catch (e) {
+                  console.warn('[DirectorServiceV2] getStage 失败，使用默认值 1');
+                  return 1;
+                }
+              },
+              // [P1-4] 写入 stage 到 SillyTavernAdapter
+              updateStage: async function(charId, newStage) {
+                try {
+                  await platformAdapter?.write?.('world.stage.' + (charId || 'default'), String(newStage));
+                  return true;
+                } catch (e) {
+                  console.warn('[DirectorServiceV2] updateStage 失败:', e);
+                  return false;
+                }
+              },
+              _raw: rawWorldSvc,
             };
           } else {
             console.warn('[DirectorServiceV2] Platform.get("worldService") 失败，尝试直接实例化 WorldData');

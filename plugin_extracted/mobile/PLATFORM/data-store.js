@@ -60,32 +60,87 @@
      * 绑定页面关闭保护，确保数据在页面刷新/关闭前持久化
      */
     _bindUnloadProtection() {
+      const self = this;
+
+      // [P0-1] 统一的关闭前持久化逻辑
+      // 优先级：1. 批量写入 → 2. sendBeacon 逐条 → 3. localStorage 兜底
       const doFlush = () => {
-        if (this._pendingWrites.size > 0 && this._adapter) {
-          // 同步写入所有待持久化数据（使用 sendBeacon 或同步 fetch）
-          for (const [fullKey, value] of this._pendingWrites) {
-            try {
-              const [domain, ...keyParts] = fullKey.split('.');
-              const key = keyParts.join('.');
-              const storagePath = this.toStoragePath(domain, key);
-              // 使用 navigator.sendBeacon 确保页面关闭时也能发送
-              const apiUrl = this._adapter._options?.apiBase;
-              if (apiUrl && navigator.sendBeacon) {
-                const payload = JSON.stringify({ value: typeof value === 'string' ? value : JSON.stringify(value) });
+        // 即使适配器不可用，也必须持久化数据
+        if (!self._pendingWrites || self._pendingWrites.size === 0) return;
+
+        // [P0-1] 步骤1：先存 localStorage（保底方案，100% 能成功）
+        //    即使网络请求失败，下次页面加载时能从 localStorage 恢复
+        for (const [fullKey, value] of self._pendingWrites) {
+          try {
+            localStorage.setItem(self._LS_PREFIX + fullKey,
+              typeof value === 'string' ? value : JSON.stringify(value));
+          } catch (e) { /* ignore */ }
+        }
+
+        // [P0-1] 步骤2：尝试 sendBeacon（优先批量，其次逐条）
+        if (self._adapter) {
+          try {
+            const apiBase = self._adapter._options?.apiBase || '';
+
+            // [P0-1] 优先用批量接口（1条请求 = N条数据，成功率最高）
+            if (typeof self._adapter.batchWrite === 'function' && navigator.sendBeacon) {
+              const batchData = {};
+              for (const [fullKey, value] of self._pendingWrites) {
+                const [domain, ...keyParts] = fullKey.split('.');
+                const key = keyParts.join('.');
+                const storagePath = self.toStoragePath(domain, key);
+                batchData[storagePath] = typeof value === 'string' ? value : JSON.stringify(value);
+              }
+              try {
+                const payload = JSON.stringify({ values: batchData });
                 navigator.sendBeacon(
-                  `${apiUrl}/var/${encodeURIComponent(storagePath)}`,
+                  `${apiBase}/vars/batch-write`,
                   new Blob([payload], { type: 'application/json' })
                 );
-              }
-            } catch (e) {
-              // 静默失败，不阻断页面关闭
+                self._pendingWrites.clear();
+                return;
+              } catch (e) { /* 降级到逐条 */ }
             }
-          }
+
+            // 逐条 sendBeacon
+            if (navigator.sendBeacon) {
+              for (const [fullKey, value] of self._pendingWrites) {
+                try {
+                  const [domain, ...keyParts] = fullKey.split('.');
+                  const key = keyParts.join('.');
+                  const storagePath = self.toStoragePath(domain, key);
+                  const payload = JSON.stringify({
+                    value: typeof value === 'string' ? value : JSON.stringify(value)
+                  });
+                  navigator.sendBeacon(
+                    `${apiBase}/var/${encodeURIComponent(storagePath)}`,
+                    new Blob([payload], { type: 'application/json' })
+                  );
+                } catch (e) { /* ignore */ }
+              }
+            }
+          } catch (e) { /* ignore */ }
         }
+
+        // 清空待写入队列（localStorage 已经存了兜底数据）
+        self._pendingWrites.clear();
       };
 
-      window.addEventListener('beforeunload', doFlush);
-      window.addEventListener('pagehide', doFlush);
+      // [P0-1] 手机 APP 环境中优先监听 visibilitychange（页面隐藏比 beforeunload 更可靠）
+      if (typeof document !== 'undefined' && document.addEventListener) {
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'hidden') {
+            doFlush();
+          }
+        });
+      }
+
+      // pagehide（iOS Safari 更可靠）
+      if (typeof window !== 'undefined' && window.addEventListener) {
+        window.addEventListener('pagehide', doFlush);
+        // beforeunload（桌面浏览器）
+        window.addEventListener('beforeunload', doFlush);
+      }
     }
 
     // ==================== localStorage 降级存储 ====================
@@ -323,7 +378,8 @@
     }
 
     /**
-     * 同步读取（仅从缓存）
+     * 同步读取（优先从缓存，其次从 localStorage 恢复源）
+     * [P1-2] 解决数据刷新后消失的问题：即使异步加载还未完成，也能从 localStorage 获取上次写入的兜底值
      * @param {string} domain
      * @param {string} key
      * @param {any} defaultValue
@@ -335,9 +391,18 @@
 
       if (cached !== undefined) {
         this._updateAccessOrder(fullKey);
-        // [修复] 返回深克隆，防止调用者修改缓存
         return this._deepClone(cached.value);
       }
+
+      // [P1-2] 缓存中没有 → 查 localStorage（页面刚刷新时 _loadDomainData 还没跑完）
+      try {
+        const localValue = this._loadFromLocalStorage(fullKey);
+        if (localValue !== null && localValue !== undefined) {
+          // 顺便放入内存缓存（避免下次再读磁盘）
+          this._setCache(fullKey, localValue, false);
+          return this._deepClone(localValue);
+        }
+      } catch (e) { /* ignore */ }
 
       return defaultValue;
     }
@@ -624,17 +689,18 @@
      * 立即刷新所有待写入
      */
     async flush() {
+      // 已在刷新中，或没有待写入数据，直接返回
       if (this._flushing || this._pendingWrites.size === 0) {
         return;
       }
 
-      // 检查适配器是否可用
       if (!this._adapter) {
         console.warn('[DataStore] 无法刷新：适配器未初始化，降级到 localStorage');
         this._flushToLocalStorage();
         return;
       }
 
+      // [P0-2] 进入刷新状态前先锁定
       this._flushing = true;
 
       if (this._flushTimer) {
@@ -642,10 +708,15 @@
         this._flushTimer = null;
       }
 
+      // 取出并清空当前批次的写入
       const writes = new Map(this._pendingWrites);
       this._pendingWrites.clear();
 
-      console.debug('[DataStore] 刷新写入:', writes.size, '项');
+      const writeCount = writes.size;
+      console.debug('[DataStore] 刷新写入:', writeCount, '项');
+
+      // [P0-2] 记录所有失败的 key，最后合并回 pendingWrites
+      const failedKeys = new Set();
 
       // [优化] 优先使用批量写入接口：1次 HTTP 取代 N次
       let batchSuccess = false;
@@ -661,7 +732,7 @@
 
           await this._adapter.batchWrite(batchData);
 
-          // 标记所有缓存为不脏
+          // 成功：标记所有缓存为不脏
           for (const fullKey of writes.keys()) {
             const cached = this._cache.get(fullKey);
             if (cached) cached.dirty = false;
@@ -672,7 +743,7 @@
         }
       }
 
-      // 降级：逐个写入（也支持单项或批量接口不可用时）
+      // [P0-2] 逐个写入（批量失败或批量接口不可用时）
       if (!batchSuccess) {
         for (const [fullKey, value] of writes) {
           try {
@@ -684,27 +755,46 @@
 
             // 更新缓存状态
             const cached = this._cache.get(fullKey);
-            if (cached) {
-              cached.dirty = false;
-            }
+            if (cached) cached.dirty = false;
           } catch (e) {
-            console.error('[DataStore] 写入失败:', fullKey, e);
-            // 降级到 localStorage
+            console.error('[DataStore] 写入失败:', fullKey, e.message || e);
+            // [P0-2] 写入失败 → 放回 pendingWrites（下次继续重试）
+            //     同时存 localStorage 作为页面刷新时的恢复源
+            failedKeys.add(fullKey);
             this._saveToLocalStorage(fullKey, value);
-            // 更新缓存状态
-            const cached = this._cache.get(fullKey);
-            if (cached) {
-              cached.dirty = false;
-            }
           }
         }
       }
 
+      // [P0-2] 写入失败的 key 合并回 pendingWrites
+      if (failedKeys.size > 0) {
+        for (const [fullKey, value] of writes) {
+          if (failedKeys.has(fullKey)) {
+            this._pendingWrites.set(fullKey, value);
+          }
+        }
+        console.warn('[DataStore] ' + failedKeys.size + ' 项写入失败，加入下次重试队列');
+      }
+
+      // [P0-3] 无论成功与否，先解锁
       this._flushing = false;
 
-      // 如果还有未写入的，继续刷新
+      // [P0-3] 有失败项时，延迟2秒后重试，避免无限死循环
       if (this._pendingWrites.size > 0) {
-        setTimeout(() => this.flush(), 1000);
+        // 使用 _flushRetryCount 限制失败后重试次数
+        this._flushRetryCount = (this._flushRetryCount || 0) + 1;
+
+        // 超过 5 次失败后停止（避免死循环），改由页面隐藏时的 doFlush 兜底
+        if (this._flushRetryCount <= 5) {
+          const backoffMs = 2000 + (this._flushRetryCount - 1) * 2000; // 2s, 4s, 6s, 8s, 10s
+          setTimeout(() => this.flush(), backoffMs);
+        } else {
+          console.warn('[DataStore] flush 重试次数超过上限，改为页面隐藏时再同步');
+          this._flushRetryCount = 0;
+        }
+      } else {
+        // 成功 → 重置失败计数
+        this._flushRetryCount = 0;
       }
     }
 
