@@ -3,7 +3,7 @@ port: 8000
 whitelistMode: false
 browserLaunch:
   browser: default
-  enabled: true
+  enabled: false
   hostname: auto
   port: -1
   avoidLocalhost: false
